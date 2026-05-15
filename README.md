@@ -1,14 +1,17 @@
 # quickbloom
 
-Fast Bloom filter implementations for x86_64. Three designs, one ABI.
+Fast Bloom filter implementations for x86_64. Three designs, one ABI;
+together they're **quickbloom**.
 
 ## What's here
 
-| File | When to use |
-|---|---|
-| `bloom_single_key.c` | In-cache filters (< ~10 MB) or contains-heavy workloads. Fastest in-cache. |
-| `bloom_unified.c` | Good default. Adds prefetch lookahead; competitive across the cache hierarchy. |
-| `bloom_batched.c` | Out-of-cache filters (≥ ~10 MB) or columnar workloads. Exposes an 8-way batched ABI. |
+The three quickbloom designs:
+
+| File | Role | When to use |
+|---|---|---|
+| `bloom_single_key.c` | quickbloom: **single_key** | In-cache filters (< ~10 MB) or contains-heavy workloads. Fastest in-cache. |
+| `bloom_unified.c`    | quickbloom: **unified**    | Good default. Adds prefetch lookahead; competitive across the cache hierarchy. |
+| `bloom_batched.c`    | quickbloom: **batched**    | Out-of-cache filters (≥ ~10 MB) or columnar workloads. Exposes an 8-way batched ABI. |
 
 `single_key` and `unified` share one source (`bloom_sbbf.c`) and select a
 compile-time `PREFETCH_LOOKAHEAD` macro — two configurations, one
@@ -18,7 +21,8 @@ points; the other two expose the single-key + prehash ABI only.
 Reference implementations of other designs (Apache Parquet/Impala SBBF,
 Save Buffer PatternedSimd, textbook K-hash Bloom) live in
 [`comparisons/`](comparisons/README.md) and are built by the same
-harness when you pass `--comparisons`.
+harness when you pass `--comparisons`. The head-to-head table below
+includes them.
 
 ## Quick start
 
@@ -103,28 +107,64 @@ AVX-512 anyway.
 ## Performance
 
 Intel Xeon @ 2.8 GHz (Cascade Lake-class, 33 MB L3), clang -O3,
-hash+bloom contains-miss, ns/op min. See `comparisons/README.md` for
-the head-to-head against Impala, Krassovsky, and a textbook baseline
-measured the same way.
+contains-miss hash+bloom path, ns/op min.
 
-| Filter size              | single_key | unified | batched |
-|--------------------------|-----------:|--------:|--------:|
-| S  (128 KB, in L2)       |   **1.95** |    2.61 |    2.75 |
-| M  (2 MB,   in L2/L3)    |       5.97 | **4.90**|    6.18 |
-| L  (32 MB,  around L3)   |      16.27 |**15.21**|   21.55 |
-| XL (512 MB, in DRAM)     |      29.47 |**25.34**|   35.74 |
+**quickbloom across the cache hierarchy:**
 
-In-cache `single_key` wins. As the working set leaves L2, prefetch
-lookahead in `unified` pulls ahead and stays ahead through DRAM. On
-this host with 33 MB L3, `batched` is never the winner — on hosts with
-a smaller L3 (or workloads that batch 8 keys per call), the 8-way
-batched ABI in `bloom_batched.c` can recover the gap; run the bench
-locally to confirm. Prehash-mode numbers (algorithm only, comparable
-to published cyc/op) are ~30% lower across the board.
+| Filter size              | quickbloom: single_key | quickbloom: unified | quickbloom: batched |
+|--------------------------|-----------------------:|--------------------:|--------------------:|
+| S  (128 KB, in L2)       |               **1.99** |                2.56 |                2.72 |
+| M  (2 MB,   in L2/L3)    |                  11.22 |                9.58 |            **7.02** |
+| L  (32 MB,  around L3)   |                  20.05 |           **17.83** |               26.99 |
+| XL (512 MB, in DRAM)     |                  29.47 |           **25.34** |               35.74 |
 
-Run `bench_all.py` on your hardware for ground truth — `vpmullo`
-latency varies (Haswell ~10 cyc, Ice Lake / SPR ~5, Zen 3+ ~3–4), as
-does L3 size and prefetcher behavior.
+Each design wins in a different cache regime on this host: `single_key`
+in L2, `batched` in L3, `unified` out of L3. The crossover points
+shift with L3 size, gather latency, and prefetcher behavior — run the
+bench locally to find what's true for your hardware. Prehash-mode
+numbers (algorithm only, comparable to published cyc/op) are 30–50%
+lower across the board; see `bench_all.py` output.
+
+**Head-to-head vs other designs**, at S (128 KB, in L2), contains-miss:
+
+| Implementation              | K | hash+bloom (ns/op) | prehash (ns/op) | cyc/op (prehash) | FP rate |
+|-----------------------------|---|-------------------:|----------------:|-----------------:|--------:|
+| **quickbloom: single_key**  | 8 |           **1.99** |        **1.44** |          **4.0** | 0.00034 |
+| **quickbloom: unified**     | 8 |               2.56 |            1.74 |              4.9 | 0.00034 |
+| **quickbloom: batched**     | 4 |               2.72 |            2.09 |              5.9 | 0.00257 |
+| `comparisons/bloom_krassovsky.c` | 5 |          5.63 |            4.96 |             13.9 | 0.00346 |
+| `comparisons/bloom_classic.c`    | 8 |          9.40 |            8.49 |             23.8 | 0.00016 |
+| `comparisons/bloom_impala.c`     | 8 |         17.56 |            8.51 |             23.8 | 0.00034 |
+| fastbloom (Rust, sbbf-AVX2) †    | 8 |         ~3–5  |            n/a  |          ~6–10   |     -   |
+
+Reproduce locally:
+```sh
+CC=clang python3 bench_all.py --sizes S --comparisons
+```
+
+Notes:
+
+- **`impala` hash+bloom is 9× slower than `single_key`, but only 2× in
+  prehash mode.** Impala follows the Parquet spec literally: scalar
+  bit-set + XXH64. The hash+bloom gap is roughly half algorithm
+  (scalar vs SIMD mask compute) and half hash (XXH64 vs wymum).
+
+- **`krassovsky` uses `vpgatherqq`.** On older gather implementations
+  (Cascade Lake) it pays 3× the cost vs scalar 8-byte loads. On
+  Sapphire Rapids the gap shrinks to ~16%. Either way `single_key`
+  wins, but the margin is hardware-dependent.
+
+- **FP rates differ across rows.** `batched` (K=4) and `krassovsky`
+  (K=5, mask-table) report ~10× higher FP than the K=8 rows at the
+  same bits/key. Use `bench_all.py --target-fp X` for an equal-FP
+  comparison; on this CPU it does not change the ordering above.
+
+- **`min` of ns/op samples** is the headline, as it's the most
+  reproducible across runs. Median and p90 are also reported.
+
+† fastbloom is a Rust crate (`tomtomwombat/fastbloom`); not ported
+here. The cited number is from its public benchmarks on different
+hardware.
 
 ## Variants we tried and rejected
 

@@ -28,33 +28,47 @@ python3 ../test_bloom.py
 
 ## Measured head-to-head
 
-Intel Xeon Sapphire Rapids @ 2.1 GHz, clang -O3, S = 128 KB filter,
-contains-miss (hash+bloom path), ns/op min:
+Intel Xeon @ 2.8 GHz (Cascade Lake-class, 33 MB L3), clang -O3, S =
+128 KB filter, contains-miss, ns/op min:
 
-| Implementation               | K | ns/op | cyc/op | FP rate |
-|------------------------------|---|------:|-------:|--------:|
-| `single_key` (top-level)     | 8 | **1.62** | **3.4** | 0.00034 |
-| `unified` (top-level)        | 8 |  2.03 |   4.3  | 0.00034 |
-| `batched` (top-level)        | 4 |  2.84 |   6.0  | 0.00257 |
-| `bloom_krassovsky.c`         | 5 |  1.87 |   3.9  | 0.00346 |
-| `bloom_impala.c`             | 8 | 17.53 |  36.8  | 0.00034 |
-| `bloom_classic.c`            | 8 | 10.33 |  21.7  | 0.00016 |
+| Implementation                | K | hash+bloom | prehash | cyc/op (prehash) | FP rate |
+|-------------------------------|---|-----------:|--------:|-----------------:|--------:|
+| `single_key` (top-level)      | 8 |   **1.99** |**1.44** |          **4.0** | 0.00034 |
+| `unified` (top-level)         | 8 |       2.56 |    1.74 |              4.9 | 0.00034 |
+| `batched` (top-level)         | 4 |       2.72 |    2.09 |              5.9 | 0.00257 |
+| `bloom_krassovsky.c`          | 5 |       5.63 |    4.96 |             13.9 | 0.00346 |
+| `bloom_classic.c`             | 8 |       9.40 |    8.49 |             23.8 | 0.00016 |
+| `bloom_impala.c`              | 8 |      17.56 |    8.51 |             23.8 | 0.00034 |
 
-Out of L3 (L = 32 MB, contains-miss), `batched` (8.68 ns) beats
-`krassovsky` (9.11 ns) — direct confirmation that scalar 8-byte
-loads beat `vpgatherqq` on this CPU.
+At L (32 MB, around L3):
+
+| Implementation                | hash+bloom miss (ns/op) | prehash miss (ns/op) |
+|-------------------------------|------------------------:|---------------------:|
+| `unified` (top-level)         |                **17.83**|             **11.61**|
+| `single_key` (top-level)      |                   20.05 |                14.33 |
+| `krassovsky`                  |                   22.50 |                21.05 |
+| `classic`                     |                   24.25 |                17.89 |
+| `batched` (top-level)         |                   26.99 |                13.27 |
+| `impala`                      |                   57.40 |                22.43 |
 
 ## Caveats
+
+* **Gather is CPU-dependent.** Krassovsky uses `vpgatherqq` for the
+  contains path. On older gather implementations (Cascade Lake)
+  `single_key` is ~3× faster; on Sapphire Rapids (improved gather
+  latency) the gap narrows to ~16%. Either way `single_key` wins, but
+  the margin shifts by CPU.
 
 * **Krassovsky's K is approximate.** PatternedSimd's mask table sets
   4–5 bits per mask with a sliding window; the parser sees K=5. The
   realized FP rate is ~8× the theoretical reported in the K=5 column
   because the algorithm is not a true independent-k-position Bloom.
 
-* **Impala uses XXH64.** Compared to `single_key`'s wymum (one 128-bit
-  multiply), XXH64 is several times slower per key. The 10× gap to
-  `single_key` is part hash, part algorithm — not pure SIMD-mask vs
-  scalar-mask.
+* **Impala's gap is half hash, half algorithm.** Compared to
+  `single_key`'s wymum, XXH64 is several times slower per key. In
+  prehash mode (hash excluded from the timed loop) Impala lands at
+  ~8.5 ns/op — roughly the same as `bloom_classic.c`. The remaining
+  algorithmic gap is "scalar bit-set vs SIMD mask compute."
 
 * **`bloom_classic.c` uses double-hashing** (Kirsch–Mitzenmacher) to
   cheaply derive K positions from one 128-bit multiply. A "more
