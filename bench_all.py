@@ -16,8 +16,9 @@ Two sizing modes:
     FP = X".
 
 Usage:
-    python3 bench_all.py                       # all candidates, S+M+L+XL sizes
-    python3 bench_all.py --sizes S,XL          # subset (endpoints only)
+    python3 bench_all.py                       # the 3 top-level designs
+    python3 bench_all.py --comparisons         # also include comparisons/*.c
+    python3 bench_all.py --sizes S,XL          # subset of sizes
     python3 bench_all.py --no-prehash          # skip the prehash bench
     python3 bench_all.py --target-fp 0.001     # equal-FP mode
     CC=clang python3 bench_all.py              # use clang (typically ~12% faster)
@@ -30,15 +31,21 @@ from pathlib import Path
 import harness
 
 
-CANDIDATES = [
+# The 3 designs this repo ships at the top level.
+MAIN_CANDIDATES = [
     ("bloom_single_key.c", "single_key  -- SBBF, no prefetch (best in-cache)"),
     ("bloom_unified.c",    "unified     -- SBBF + prefetch (good default)"),
     ("bloom_batched.c",    "batched     -- 64-bit blocks + 8-way SIMD"),
-    # External competitors:
-    ("bloom_impala.c",     "impala      -- Apache Parquet/Impala SBBF, scalar + XXH64"),
-    ("bloom_krassovsky.c", "krassovsky  -- Save Buffer PatternedSimd, 64-bit + gather"),
-    # Baseline:
-    ("bloom_classic.c",    "classic     -- textbook K-hash bloom (baseline)"),
+]
+
+# External references / baselines, lifted from comparisons/ when --comparisons.
+COMPARISON_CANDIDATES = [
+    ("comparisons/bloom_impala.c",
+     "impala      -- Apache Parquet/Impala SBBF, scalar + XXH64"),
+    ("comparisons/bloom_krassovsky.c",
+     "krassovsky  -- Save Buffer PatternedSimd, 64-bit + gather"),
+    ("comparisons/bloom_classic.c",
+     "classic     -- textbook K-hash bloom (baseline)"),
 ]
 
 
@@ -174,12 +181,18 @@ def main():
                          "theoretical FP rate hits this target given n_insert. "
                          "Apples-to-apples comparison across different K. "
                          "Example: --target-fp 0.001")
+    ap.add_argument("--comparisons", action="store_true",
+                    help="also benchmark comparisons/*.c (impala, krassovsky, classic)")
     args = ap.parse_args()
 
     sizes = [s.strip() for s in args.sizes.split(",")]
     for s in sizes:
         if s not in harness.BENCH_SIZES:
             raise SystemExit(f"unknown size {s!r}; valid: {','.join(harness.BENCH_SIZES)}")
+
+    candidates = list(MAIN_CANDIDATES)
+    if args.comparisons:
+        candidates += COMPARISON_CANDIDATES
 
     header()
     if args.target_fp is not None:
@@ -188,7 +201,7 @@ def main():
         print()
     t0 = time.perf_counter()
     for size in sizes:
-        report_size(CANDIDATES, size, do_prehash=not args.no_prehash,
+        report_size(candidates, size, do_prehash=not args.no_prehash,
                     target_fp=args.target_fp)
     print(f"Done in {time.perf_counter() - t0:.1f}s")
 
