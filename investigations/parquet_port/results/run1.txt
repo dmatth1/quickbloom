@@ -1,0 +1,33 @@
+Parquet bloom port: scalar (arrow-cpp / arrow-rs / velox shape)
+                  vs AVX2 (v14 drop-in) on the same Parquet-spec layout
+XXH64 self-test: OK
+
+=== small (in-cache) ===
+  64 row groups x 8 KiB each = 0.5 MiB total filter footprint
+  4096 keys per filter, 50000 query values
+  diff-test: 3200000 probes, 0 mismatches.
+  scalar (arrow-cpp/arrow-rs/velox shape): 11.45 ns/probe
+  AVX2   (v14 drop-in, same layout):       3.77 ns/probe
+  -> 3.04x speedup on probe
+  per simulated `WHERE col = 'X'` query (= 64 row group probes):
+    scalar: 0.73 us, AVX2: 0.24 us, savings: 0.49 us/query
+
+=== medium (out-of-L3, 128 MiB) ===
+  4096 row groups x 32 KiB each = 128.0 MiB total filter footprint
+  16000 keys per filter, 20000 query values
+  diff-test: 81920000 probes, 0 mismatches.
+  scalar (arrow-cpp/arrow-rs/velox shape): 31.64 ns/probe
+  AVX2   (v14 drop-in, same layout):       27.26 ns/probe
+  -> 1.16x speedup on probe
+  per simulated `WHERE col = 'X'` query (= 4096 row group probes):
+    scalar: 129.58 us, AVX2: 111.65 us, savings: 17.93 us/query
+
+=== large (deep out-of-L3, 1 GiB) ===
+  16384 row groups x 64 KiB each = 1024.0 MiB total filter footprint
+  32000 keys per filter, 5000 query values
+  diff-test: 81920000 probes, 0 mismatches.
+  scalar (arrow-cpp/arrow-rs/velox shape): 36.68 ns/probe
+  AVX2   (v14 drop-in, same layout):       31.82 ns/probe
+  -> 1.15x speedup on probe
+  per simulated `WHERE col = 'X'` query (= 16384 row group probes):
+    scalar: 601.01 us, AVX2: 521.40 us, savings: 79.61 us/query
