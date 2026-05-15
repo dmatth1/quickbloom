@@ -1,4 +1,4 @@
-# bloom
+# quickbloom
 
 Fast Bloom filter implementations for x86_64. Three designs, one ABI.
 
