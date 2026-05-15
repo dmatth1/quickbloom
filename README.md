@@ -124,46 +124,31 @@ bench locally to find what's true for your hardware. Prehash-mode
 numbers (algorithm only, comparable to published cyc/op) are 30–50%
 lower across the board; see `bench_all.py` output.
 
-**Head-to-head vs other designs**, at S (128 KB, in L2), contains-miss:
+**Head-to-head vs other designs**, at S (128 KB, in L2), contains-miss,
+ns/op min (cyc/op at 2.8 GHz):
 
-| Implementation              | K | hash+bloom (ns/op) | prehash (ns/op) | cyc/op (prehash) | FP rate |
-|-----------------------------|---|-------------------:|----------------:|-----------------:|--------:|
-| **quickbloom: single_key**  | 8 |           **1.99** |        **1.44** |          **4.0** | 0.00034 |
-| **quickbloom: unified**     | 8 |               2.56 |            1.74 |              4.9 | 0.00034 |
-| **quickbloom: batched**     | 4 |               2.72 |            2.09 |              5.9 | 0.00257 |
-| `comparisons/bloom_krassovsky.c` | 5 |          5.63 |            4.96 |             13.9 | 0.00346 |
-| `comparisons/bloom_classic.c`    | 8 |          9.40 |            8.49 |             23.8 | 0.00016 |
-| `comparisons/bloom_impala.c`     | 8 |         17.56 |            8.51 |             23.8 | 0.00034 |
-| fastbloom (Rust, sbbf-AVX2) †    | 8 |         ~3–5  |            n/a  |          ~6–10   |     -   |
+| Implementation             | K | hash+bloom | prehash | cyc/op | FP rate |
+|----------------------------|---|-----------:|--------:|-------:|--------:|
+| **quickbloom: single_key** | 8 |   **1.99** |**1.44** |**4.0** | 0.00034 |
+| **quickbloom: unified**    | 8 |       2.56 |    1.74 |    4.9 | 0.00034 |
+| **quickbloom: batched**    | 4 |       2.72 |    2.09 |    5.9 | 0.00257 |
+| `krassovsky`               | 5 |       5.63 |    4.96 |   13.9 | 0.00346 |
+| `classic`                  | 8 |       9.40 |    8.49 |   23.8 | 0.00016 |
+| `impala`                   | 8 |      17.56 |    8.51 |   23.8 | 0.00034 |
 
-Reproduce locally:
-```sh
-CC=clang python3 bench_all.py --sizes S --comparisons
-```
+Reproduce: `CC=clang python3 bench_all.py --sizes S --comparisons`.
 
-Notes:
+- **Impala's 9× hash+bloom gap shrinks to 2× in prehash mode** —
+  half the penalty is XXH64 vs wymum, half is scalar bit-set vs SIMD
+  mask compute.
+- **Krassovsky's `vpgatherqq` is CPU-sensitive.** ~3× vs scalar loads
+  on Cascade Lake, ~16% on Sapphire Rapids. `single_key` wins on both.
+- **FP rates differ.** K=4/5 rows report ~10× higher FP than K=8 at
+  equal bits/key. Pass `--target-fp X` to normalize; ordering doesn't
+  change on this CPU.
 
-- **`impala` hash+bloom is 9× slower than `single_key`, but only 2× in
-  prehash mode.** Impala follows the Parquet spec literally: scalar
-  bit-set + XXH64. The hash+bloom gap is roughly half algorithm
-  (scalar vs SIMD mask compute) and half hash (XXH64 vs wymum).
-
-- **`krassovsky` uses `vpgatherqq`.** On older gather implementations
-  (Cascade Lake) it pays 3× the cost vs scalar 8-byte loads. On
-  Sapphire Rapids the gap shrinks to ~16%. Either way `single_key`
-  wins, but the margin is hardware-dependent.
-
-- **FP rates differ across rows.** `batched` (K=4) and `krassovsky`
-  (K=5, mask-table) report ~10× higher FP than the K=8 rows at the
-  same bits/key. Use `bench_all.py --target-fp X` for an equal-FP
-  comparison; on this CPU it does not change the ordering above.
-
-- **`min` of ns/op samples** is the headline, as it's the most
-  reproducible across runs. Median and p90 are also reported.
-
-† fastbloom is a Rust crate (`tomtomwombat/fastbloom`); not ported
-here. The cited number is from its public benchmarks on different
-hardware.
+Not ported: fastbloom (Rust crate `tomtomwombat/fastbloom`, published
+~3–5 ns/op on its own hardware).
 
 ## Variants we tried and rejected
 
