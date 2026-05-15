@@ -1,0 +1,6 @@
+runs/
+*.so
+*.o
+*.pyc
+__pycache__/
+.pytest_cache/
