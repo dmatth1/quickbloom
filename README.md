@@ -121,52 +121,34 @@ hold across modern x86, but the absolute ns/op will shift.
 
 ## Comparison to other designs
 
-In-cache contains, prehash path (hash excluded), Sapphire Rapids @ 2.1 GHz.
-Other-design numbers (†) are published cyc/op figures from upstream
-benchmark suites — measured on different hardware, so the cycle column
-is the more portable comparison.
+In-cache (S = 128 KB filter) contains, prehash path, Sapphire Rapids
+@ 2.1 GHz — comparable to published `cyc/op` figures:
 
-### Single-key designs (one key per call)
+| Implementation                | Design                                |  ns/op | cyc/op |
+|-------------------------------|---------------------------------------|-------:|-------:|
+| **single_key** (this repo)    | SBBF 256-bit, K=8, single-key         | **1.1** | **2.4** |
+| **unified** (this repo)       | single_key + prefetch lookahead       |   1.3  |   2.7  |
+| **batched** (this repo)       | SBBF 64-bit, K=4, 8-way SIMD batched  |   2.0  |   4.2  |
+| Krassovsky PatternedSimd †    | 64-bit blocks, 8-way SIMD batched     |  ~1.2  |   2.5  |
+| Apache Impala SBBF †          | 256-bit blocks, single-key            |  ~2.4  |  ~5    |
+| fastbloom (Rust, sbbf-AVX2) † | 256-bit blocks, single-key            |  ~3–5  |  ~6–10 |
 
-| Implementation                | ISA   | S: ns/op | S: cyc/op |
-|-------------------------------|-------|---------:|----------:|
-| **single_key** (this repo)    | AVX2  | **1.1**  | **2.4**   |
-| **unified** (this repo)       | AVX2  | 1.3      | 2.7       |
-| Apache Impala SBBF †          | AVX2  | —        | ~5        |
-| fastbloom (Rust, sbbf-AVX2) † | AVX2  | —        | ~6–10     |
-
-### Batched designs (8 keys per call)
-
-| Implementation                | ISA   | S: ns/op | S: cyc/op |
-|-------------------------------|-------|---------:|----------:|
-| **batched** (this repo)       | AVX2  | 2.0      | 4.2       |
-| Krassovsky PatternedSimd †    | AVX2  | ~1.2     | 2.5       |
-
-Sources:
-[save-buffer/bloomfilter_benchmarks](https://github.com/save-buffer/bloomfilter_benchmarks)
-(PatternedSimdBloomFilter, AVX2 with `_mm256_i64gather_epi64` + shift-pattern mask),
+† Published numbers from upstream benchmark suites, measured on
+different hardware. The cycle count is the more portable comparison
+since absolute ns/op depends on clock and `vpmullo` latency. Sources:
+[save-buffer/bloomfilter_benchmarks](https://github.com/save-buffer/bloomfilter_benchmarks),
 [Apache Impala BloomFilter](https://github.com/apache/impala),
 [tomtomwombat/fastbloom](https://github.com/tomtomwombat/fastbloom).
-Only in-cache (S) numbers are published for the references, so M/L/XL
-columns are omitted; see the **Performance** table above for our
-implementations across the full cache hierarchy.
+All implementations listed are AVX2 (Krassovsky's PatternedSimd uses
+`_mm256_i64gather_epi64` + shift-pattern mask; his repo has no AVX-512
+variant).
 
-### Reading the table
-
-- **Same-algorithm comparison**: our `single_key` beats Apache Impala's
-  published ~5 cyc by ~2× on the same SBBF algorithm. Wins come from
-  the wymum 128-bit-multiply hash (one `mulq` per 16-byte key) and a
-  4-way unrolled bulk path that extracts ILP across keys.
-- **Cross-design comparison**: our `single_key` matches Krassovsky's
-  *batched* 2.5 cyc *without batching the API*. He needs 8-way SIMD
-  batching to hit that number; we hit 2.4 cyc per single-key call by
-  using wider blocks (256-bit vs his 64-bit), which amortizes
-  cache-line latency over more bits tested per key.
-- **In-design comparison**: our `batched` at 4.2 cyc is ~1.7× slower
-  than Krassovsky's batched at S. He uses a 1024-entry mask lookup
-  table loaded via `vpgatherqq`; we compute masks with a SIMD multiply
-  pipeline. The trade flips out-of-cache where our scalar 8-byte loads
-  beat `vpgatherqq` latency — see the **Performance** table for L/XL.
+The headline finding: **`single_key` matches Krassovsky's *batched*
+published number on cycles, without batching the API.** He needs 8-way
+SIMD batching across 8 keys per call to hit 2.5 cyc; we hit 2.4 cyc per
+single-key call by using wider blocks (256-bit vs 64-bit) plus a
+128-bit-multiply hash (wymum). The wider block amortizes one cache
+line's worth of latency over more bits tested per key.
 
 ### Variants we tried and rejected
 
