@@ -9,20 +9,26 @@ Fast Bloom filter implementations for x86_64. Three designs, one ABI.
 | `bloom_single_key.c` | In-cache filters (< ~10 MB) or contains-heavy workloads. Fastest in-cache. |
 | `bloom_unified.c` | Good default. Adds prefetch lookahead; competitive across the cache hierarchy. |
 | `bloom_batched.c` | Out-of-cache filters (≥ ~10 MB) or columnar workloads. Exposes an 8-way batched ABI. |
+| `bloom_classic.c` | Textbook non-blocked Bloom (K=8 double-hashing). Slow baseline; useful for comparison. |
 
-All three implement the same single-key ABI. `bloom_batched.c` adds
-optional `bloom_*_batch8` entry points.
+`single_key` and `unified` share one source (`bloom_sbbf.c`) and select a
+compile-time `PREFETCH_LOOKAHEAD` macro -- two configurations, one
+implementation. `bloom_batched.c` adds optional `bloom_*_batch8` entry
+points; the others expose the single-key + prehash ABI only.
 
 ## Quick start
 
 ```sh
-# Build + bench, all three candidates, full sweep across cache regimes
+# Build + bench, all candidates, full sweep across cache regimes
 CC=clang python3 bench_all.py
 
 # Just the endpoints (skip M and L)
 CC=clang python3 bench_all.py --sizes S,XL
 
-# Correctness tests
+# Equal-FP comparison: each candidate is sized to hit FP <= 0.001
+CC=clang python3 bench_all.py --target-fp 0.001
+
+# Correctness tests (fixed-length + variable-length keys)
 python3 test_bloom.py
 ```
 
@@ -111,14 +117,20 @@ ordering holds across modern x86, but absolute ns/op shifts.
 
 In-cache (S = 128 KB) contains, prehash, Sapphire Rapids @ 2.1 GHz:
 
-| Implementation                | Design                                |  ns/op | cyc/op |
-|-------------------------------|---------------------------------------|-------:|-------:|
-| **single_key** (this repo)    | SBBF 256-bit, K=8, single-key         | **1.1** | **2.4** |
-| **unified** (this repo)       | single_key + prefetch lookahead       |   1.3  |   2.7  |
-| **batched** (this repo)       | SBBF 64-bit, K=4, 8-way SIMD batched  |   2.0  |   4.2  |
-| Krassovsky PatternedSimd †    | 64-bit blocks, 8-way SIMD batched     |  ~1.2  |   2.5  |
-| Apache Impala SBBF †          | 256-bit blocks, single-key            |  ~2.4  |  ~5    |
-| fastbloom (Rust, sbbf-AVX2) † | 256-bit blocks, single-key            |  ~3–5  |  ~6–10 |
+| Implementation                | K | Design                                |  ns/op | cyc/op |
+|-------------------------------|---|---------------------------------------|-------:|-------:|
+| **single_key** (this repo)    | 8 | SBBF 256-bit, K=8, single-key         | **1.1** | **2.4** |
+| **unified** (this repo)       | 8 | single_key + prefetch lookahead       |   1.3  |   2.7  |
+| **batched** (this repo)       | 4 | SBBF 64-bit, K=4, 8-way SIMD batched  |   1.7  |   3.6  |
+| **classic** (this repo)       | 8 | textbook double-hashing, no blocking  |   7.4  |  15.4  |
+| Krassovsky PatternedSimd †    | ? | 64-bit blocks, 8-way SIMD batched     |  ~1.2  |   2.5  |
+| Apache Impala SBBF †          | 8 | 256-bit blocks, single-key            |  ~2.4  |  ~5    |
+| fastbloom (Rust, sbbf-AVX2) † | 8 | 256-bit blocks, single-key            |  ~3–5  |  ~6–10 |
+
+**FP-rate note:** `batched` uses K=4 vs K=8 elsewhere, so its FP rate is
+~10× higher at the same bits/key. The headline ns/op is not directly
+comparable across rows with different K — use `bench_all.py --target-fp X`
+for an apples-to-apples comparison.
 
 † Published cyc/op from upstream benchmarks, different hardware — the
 cycle count is the portable comparison. Sources:
@@ -183,12 +195,14 @@ If unsure, use `bloom_unified.c` — within ~15% of the best at every size.
 ## Files
 
 ```
-bloom_single_key.c   SBBF 256-bit + wymum + 4-way unroll
-bloom_unified.c      single_key + prefetch lookahead
+bloom_sbbf.c         SBBF 256-bit + wymum + 4-way unroll; PREFETCH_LOOKAHEAD macro
+bloom_single_key.c   stub: PREFETCH_LOOKAHEAD=0, includes bloom_sbbf.c
+bloom_unified.c      stub: PREFETCH_LOOKAHEAD=8, includes bloom_sbbf.c
 bloom_batched.c      64-bit blocks + SIMD batched mask, scalar contains
+bloom_classic.c      textbook K-hash bloom, no blocking (baseline)
 harness.py           compile + diff_test + benchmark infrastructure
-bench_all.py         run benchmarks across cache regimes
-test_bloom.py        correctness tests
+bench_all.py         run benchmarks across cache regimes; --target-fp for equal-FP
+test_bloom.py        correctness tests (fixed-length and variable-length keys)
 ```
 
 ## License

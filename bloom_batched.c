@@ -28,6 +28,8 @@
 //   XL (512 MB): ~15-28 ns/op    (wins over single_key by 2x; this is
 //                                  where the design pays off)
 
+#define K_HASHES 4
+
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -135,25 +137,10 @@ int bloom_contains(void* p, const void* key, size_t len) {
     return bloom_contains_prehash(p, bloom_hash(key, len));
 }
 
-// Compute 4 keys' masks in AVX2 (returns __m256i with 4 × 64-bit masks).
-static inline __m256i mask4_avx2(__m128i h32s_4) {
-    // h32s_4: 4 × 32-bit hashes packed into low 128 of an __m128i
-    // Replicate to 256-bit reg: 4 × 32-bit (we only use the low 128 for mullo)
-    __m256i hbcast = _mm256_zextsi128_si256(h32s_4);
-    // Wait, that puts the 4 hashes in lanes 0-3 with zeros in 4-7. For
-    // 8-lane mullo we'd need all 8 set. Use broadcast trick instead:
-    // Actually we only want 4 mullos × 4 lanes each = 16 results, but
-    // for 4 keys × 4 salts = 16 bit positions, do this with __m128i.
-    // Simpler: just do scalar for 4 keys here.
-    (void)hbcast;
-    return _mm256_setzero_si256();  // placeholder, replaced below
-}
-
 // Compute 4 keys' 64-bit masks. Each mask has 4 bits set.
-// h32s: 4 × 32-bit values (low 128 of an __m128i)
+// h32s: 4 × 32-bit hashes packed into the low 128 of an __m128i.
+// 4 keys × 4 salts = 16 multiplications via 4 × __m128i mullo (4 lanes each).
 static inline __m256i mask_for_4keys(__m128i h32s) {
-    // 4 keys × 4 salts = 16 multiplications. Use __m128i mullo (4 lanes
-    // of 32-bit) -- 4 mullos total.
     __m128i prod0 = _mm_mullo_epi32(h32s, _mm_set1_epi32((int)SALT0));
     __m128i prod1 = _mm_mullo_epi32(h32s, _mm_set1_epi32((int)SALT1));
     __m128i prod2 = _mm_mullo_epi32(h32s, _mm_set1_epi32((int)SALT2));
@@ -171,18 +158,12 @@ static inline __m256i mask_for_4keys(__m128i h32s) {
     return _mm256_or_si256(_mm256_or_si256(m0, m1), _mm256_or_si256(m2, m3));
 }
 
-// Extract 4 low-32 halves from 4 × 64-bit hashes packed in an __m256i.
+// Extract the 4 low-32-bit halves from 4 × 64-bit hashes packed in an
+// __m256i. Result: [h0.lo, h1.lo, h2.lo, h3.lo] in an __m128i.
 static inline __m128i h32s_from_256(__m256i h64s) {
-    // h64s has 4 × 64-bit. Use _mm256_cvtepi64_epi32-like dance:
-    // shuffle to bring all low 32 halves into one 128-bit lane.
-    // _mm256_castsi256_si128 takes lane 0 (lower 128 = 2 × 64-bit).
-    // For all 4, use a 32-bit shuffle that picks even lanes then permute.
     __m256i shuffled = _mm256_shuffle_epi32(h64s, _MM_SHUFFLE(2,0,2,0));
-    // Now low 128 has [h0.lo, h1.lo, h0.lo, h1.lo]
-    // and high 128 has [h2.lo, h3.lo, h2.lo, h3.lo]
     __m128i lo = _mm256_castsi256_si128(shuffled);
     __m128i hi = _mm256_extracti128_si256(shuffled, 1);
-    // Combine: [h0.lo, h1.lo, h2.lo, h3.lo]
     return _mm_unpacklo_epi64(lo, hi);
 }
 
