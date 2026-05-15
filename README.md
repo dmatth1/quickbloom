@@ -103,13 +103,13 @@ cyc/op figures).
 | Filter size | single_key | unified | batched |
 |---|---:|---:|---:|
 | S (128 KB, in L2)  | **~1.1 ns** | ~1.3 ns | ~1.7 ns |
-| M (2 MB, in L3)    | ~1.7 ns | **~1.6 ns** | ~1.8 ns |
-| L (32 MB, near L3) | ~5–6 ns | ~5–6 ns | **~12–15 ns** prefetch-bound, but better at XL |
-| XL (512 MB, DRAM)  | ~17–19 ns | **~15–17 ns** | ~15–28 ns |
+| M (2 MB, in L3)    | ~1.8 ns | **~1.7 ns** | ~1.8 ns |
+| L (32 MB, near L3) | ~6–7 ns | ~6–7 ns | **~5.5–6 ns** |
+| XL (512 MB, DRAM)  | ~18–20 ns | ~17–19 ns | **~16–17 ns** |
 
 Crossover at the L3 boundary: in-cache `single_key.c` wins; out of L3
-`unified.c` and `batched.c` win via prefetch + (for batched) batched
-SIMD mask compute and 8-byte writes.
+`batched.c` wins via batched SIMD mask compute + prefetch lookahead,
+even when called through the single-key API.
 
 **Honest caveat**: these numbers are from one CPU. Different
 microarchitectures have different `vpmullo` latencies (Haswell ~10 cyc,
@@ -118,6 +118,55 @@ load buffer sizes, and prefetcher behavior. Run `bench_all.py` on your
 target hardware for ground truth. The *relative* ordering (in-cache
 favors single_key, out-of-cache favors batched/unified) is expected to
 hold across modern x86, but the absolute ns/op will shift.
+
+## Comparison to other designs
+
+In-cache (S = 128 KB filter) contains, prehash path, Sapphire Rapids
+@ 2.1 GHz — comparable to published `cyc/op` figures:
+
+| Implementation                | Design                              |  ns/op | cyc/op |
+|-------------------------------|-------------------------------------|-------:|-------:|
+| **single_key** (this repo)    | SBBF 256-bit, K=8, single-key       | **1.1** | **2.4** |
+| **unified** (this repo)       | single_key + prefetch lookahead     |   1.3  |   2.7  |
+| **batched** (this repo)       | SBBF 64-bit, K=4, AVX2 8-way batched |   2.0  |   4.2  |
+| Krassovsky PatternedSimd †    | 64-bit blocks, AVX2 8-way batched   |  ~1.2  |   2.5  |
+| Apache Impala SBBF †          | 256-bit blocks, AVX2 single-key     |  ~2.4  |  ~5    |
+| fastbloom (Rust, sbbf-AVX2) † | 256-bit blocks, AVX2 single-key     |  ~3-5  |  ~6–10 |
+
+† Published numbers from upstream READMEs / benchmark suites, measured
+on different hardware. The cycle count is the more portable comparison
+since absolute ns/op depends on clock and `vpmullo` latency. Sources:
+[save-buffer/bloomfilter_benchmarks](https://github.com/save-buffer/bloomfilter_benchmarks),
+[Apache Impala BloomFilter](https://github.com/apache/impala),
+[tomtomwombat/fastbloom](https://github.com/tomtomwombat/fastbloom).
+
+The headline finding: **`single_key` matches Krassovsky's *batched*
+published number on cycles, without batching the API.** He needs 8-way
+SIMD batching across 8 keys per call to hit 2.5 cyc; we hit 2.4 cyc per
+single-key call by using wider blocks (256-bit vs 64-bit) plus a
+128-bit-multiply hash (wymum). The wider block amortizes one cache
+line's worth of latency over more bits tested per key.
+
+### Variants we tried and rejected
+
+Negative results from the search, all measured against the AVX2
+single-key baseline of 1.1 ns/op (2.4 cyc/op) on Sapphire Rapids:
+
+| Variant | Outcome | Why |
+|---|---|---|
+| **AVX-512 single-key** (zmm SBBF masks) | slower than AVX2 single_key | AVX-512 frequency throttling on SPR exceeds the width gain; SBBF mask compute doesn't saturate Zmm |
+| **AVX-512 batched** (zmm 8-way) | slower than AVX2 batched | same — Intel SPR client/server throttles down on heavy AVX-512 |
+| **AESENC hash** (replacing wymum) | slower than wymum | port-0 contention with `vpmullo` SBBF mask compute (both prefer p0) |
+| **`vpgatherqq` contains** | slower than scalar 8-byte loads | gather is ~12–15 cyc latency on SPR; 8 scalar loads beat it on every CPU we measured |
+| **Two parallel `mum` hash chains** | no clear improvement | hash already saturates the multiply pipe |
+| **Insert-side collision skip** | slightly slower | branch mispredict cost > duplicate-work savings on random keys |
+| **4-way unroll w/ batched store on insert** | 16 false negatives | aliased blocks need serialized load-or-store per key for store-load forwarding (fixed by `single_key`'s sequential L+O+S loop) |
+| **Shift-based mask compute** (skip xor-fold) | failed FP rate test | low bits of `r.lo` from a 64×64→128 multiply have weak diffusion |
+| **PGO** (clang -fprofile-use) | <2% improvement | code is already mostly loop-free SIMD; PGO mostly helps branchy code |
+
+The negatives are useful context for anyone re-treading this space: SPR's
+AVX-512 throttle and the AESENC/vpmullo port-0 collision drive different
+tradeoffs than the conventional wisdom on Skylake.
 
 ## Methodology
 
