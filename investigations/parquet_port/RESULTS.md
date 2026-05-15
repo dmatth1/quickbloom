@@ -92,7 +92,7 @@ hit most often) actually feels the difference.
 ## Reproducing
 
 ```
-cd parquet_port
+cd investigations/parquet_port
 make && ./bench
 ```
 

@@ -2,8 +2,7 @@
 
 Standalone microbench comparing the scalar Parquet bloom probe shipped
 by Apache Arrow C++ / arrow-rs / Velox against a v14-style AVX2 probe
-on the **same Parquet on-disk format**. Companion to `PARQUET.md` at
-the repo root.
+on the **same Parquet on-disk format**. Companion to `../PARQUET.md`.
 
 ## What this proves
 
@@ -20,8 +19,8 @@ the repo root.
 4. **Per-query CPU savings are significant on large-table scans**:
    ~224 µs/query on a 1 GiB-filter-footprint scan vs scalar.
 
-See `RESULTS.md` for the numbers and `PARQUET.md` (repo root) for
-the broader narrative including blast radius across the ecosystem.
+See `RESULTS.md` for the numbers and `../PARQUET.md` for the broader
+narrative including blast radius across the ecosystem.
 
 ## Layout
 
