@@ -1,5 +1,5 @@
 // Bench: Apache Arrow C++ / arrow-rs / Velox scalar Parquet bloom probe
-// vs v14-style AVX2 probe on the SAME Parquet-spec layout.
+// vs AVX2 probe on the SAME Parquet-spec layout.
 //
 // Workload: simulates a SELECT * WHERE col = 'X' or IN (...) scan over an
 // N-row-group Parquet table. For each query value:
@@ -149,8 +149,8 @@ static void run_regime(const char* label, int n_filters, size_t filter_bytes,
     double avx2_per   = r.avx2_ns   / double(total_probes);
     double x4_per     = r.avx2x4_ns / double(total_probes);
     printf("  scalar (arrow-cpp/arrow-rs/velox shape):       %.2f ns/probe\n", scalar_per);
-    printf("  AVX2 single-key (v14 drop-in, same layout):    %.2f ns/probe\n", avx2_per);
-    printf("  AVX2 4-way unroll across row groups (v11):     %.2f ns/probe\n", x4_per);
+    printf("  AVX2 single-key (drop-in, same layout):        %.2f ns/probe\n", avx2_per);
+    printf("  AVX2 4-way unroll across row groups:           %.2f ns/probe\n", x4_per);
     printf("  -> %.2fx single-key, %.2fx with 4-way across row groups\n",
            scalar_per / avx2_per, scalar_per / x4_per);
 
@@ -166,7 +166,7 @@ static void run_regime(const char* label, int n_filters, size_t filter_bytes,
 int main() {
     setbuf(stdout, nullptr);
     printf("Parquet bloom port: scalar (arrow-cpp / arrow-rs / velox shape)\n");
-    printf("                  vs AVX2 (v14 drop-in) on the same Parquet-spec layout\n");
+    printf("                  vs AVX2 drop-in on the same Parquet-spec layout\n");
 
     if (!xxh::self_test()) {
         fprintf(stderr, "XXH64 self-test FAILED -- aborting.\n");

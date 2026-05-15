@@ -1,8 +1,8 @@
-# Parquet bloom port: v14 AVX2 vs scalar Apache Arrow / Velox
+# Parquet bloom port: AVX2 vs scalar Apache Arrow / Velox
 
 Standalone microbench comparing the scalar Parquet bloom probe shipped
-by Apache Arrow C++ / arrow-rs / Velox against a v14-style AVX2 probe
-on the **same Parquet on-disk format**. Companion to `../PARQUET.md`.
+by Apache Arrow C++ / arrow-rs / Velox against an AVX2 probe on the
+**same Parquet on-disk format**. Companion to `../PARQUET.md`.
 
 ## What this proves
 
@@ -13,8 +13,8 @@ on the **same Parquet on-disk format**. Companion to `../PARQUET.md`.
    over 167M (query, filter) pairs across three regimes — 0
    mismatches.
 3. **Single-key probe is 3.4× faster in-cache, 1.15–1.23×
-   out-of-L3.** A v11-style 4-way bulk probe across row groups
-   widens the out-of-L3 win to 1.49–1.57× by overlapping cache-miss
+   out-of-L3.** A 4-way bulk probe across row-group filters widens
+   the out-of-L3 win to 1.49–1.57× by overlapping cache-miss
    latency.
 4. **Per-query CPU savings are significant on large-table scans**:
    ~224 µs/query on a 1 GiB-filter-footprint scan vs scalar.
@@ -30,7 +30,7 @@ narrative including blast radius across the ecosystem.
   - `parquet_bloom.{h,cpp}` — three probe paths on the same
     Parquet-spec data structure:
     1. `find_scalar`: line-for-line Apache Arrow C++ `FindHash`.
-    2. `find_avx2`: v14-style AVX2 probe, same on-disk layout.
+    2. `find_avx2`: AVX2 probe, same on-disk layout.
     3. `find_avx2_x4`: 4-way bulk probe across row-group filters.
   - `bench.cpp` — workload generator + diff-test + 3-regime bench.
 - `reference/` — verbatim source from upstream:

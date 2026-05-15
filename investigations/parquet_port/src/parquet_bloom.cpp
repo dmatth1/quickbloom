@@ -63,10 +63,10 @@ bool filter::find_avx2(uint64_t hash) const {
     return _mm256_testc_si256(blk_v, mask);
 }
 
-// (3) v11-style 4-way unrolled probe. Each filter is independent so all
-//     four cache lines can be in flight at once; the OoO core overlaps
-//     the cache-miss latency that dominates the out-of-L3 regime.
-//     Same mask used for all four (same query hash).
+// (3) 4-way unrolled probe across row-group filters. Each filter is
+//     independent so all four cache lines can be in flight at once;
+//     the OoO core overlaps the cache-miss latency that dominates the
+//     out-of-L3 regime. Same mask used for all four (same query hash).
 int filter::find_avx2_x4(const filter* f0, const filter* f1,
                          const filter* f2, const filter* f3, uint64_t hash) {
     uint32_t key = uint32_t(hash);

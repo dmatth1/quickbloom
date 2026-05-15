@@ -42,14 +42,14 @@ public:
     //     arrow-cpp, arrow-rs, and Velox.
     bool find_scalar(uint64_t hash) const;
 
-    // (2) AVX2 on the same Parquet-spec layout. The v14 drop-in.
-    //     Bit-identical results, ~3-5x faster on this hardware.
+    // (2) AVX2 drop-in on the same Parquet-spec layout. Bit-identical
+    //     results, ~3-5x faster on this hardware.
     bool find_avx2(uint64_t hash) const;
 
-    // (3) AVX2 + v11-style 4-way unroll: probe 4 row-group filters in
-    //     parallel against the SAME query hash. Lets the OoO core have
-    //     4 cache misses in flight simultaneously when filters are out
-    //     of L3. Returns count of positives (0..4).
+    // (3) AVX2 + 4-way unroll across row-group filters: probe 4 filters
+    //     in parallel against the SAME query hash. Lets the OoO core
+    //     have 4 cache misses in flight simultaneously when filters are
+    //     out of L3. Returns count of positives (0..4).
     static int find_avx2_x4(const filter* f0, const filter* f1,
                             const filter* f2, const filter* f3,
                             uint64_t hash);
