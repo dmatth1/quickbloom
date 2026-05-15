@@ -10,6 +10,8 @@ Fast Bloom filter implementations for x86_64. Three designs, one ABI.
 | `bloom_unified.c` | Good default. Adds prefetch lookahead; competitive across the cache hierarchy. |
 | `bloom_batched.c` | Out-of-cache filters (≥ ~10 MB) or columnar workloads. Exposes an 8-way batched ABI. |
 | `bloom_classic.c` | Textbook non-blocked Bloom (K=8 double-hashing). Slow baseline; useful for comparison. |
+| `bloom_impala.c` | Faithful Apache Parquet/Impala SBBF (scalar, XXH64). External competitor. |
+| `bloom_krassovsky.c` | Faithful port of Save Buffer's PatternedSimdBloomFilter. External competitor with batched SIMD + gather. |
 
 `single_key` and `unified` share one source (`bloom_sbbf.c`) and select a
 compile-time `PREFETCH_LOOKAHEAD` macro -- two configurations, one
@@ -115,25 +117,34 @@ ordering holds across modern x86, but absolute ns/op shifts.
 
 ## Comparison to other designs
 
-In-cache (S = 128 KB) contains, prehash, Sapphire Rapids @ 2.1 GHz:
+`bench_all.py` builds every row in this table from source and measures
+them on the host. Hash+bloom path, S = 128 KB filter, contains-miss, all
+on Sapphire Rapids @ 2.1 GHz with clang -O3:
 
-| Implementation                | K | Design                                |  ns/op | cyc/op |
-|-------------------------------|---|---------------------------------------|-------:|-------:|
-| **single_key** (this repo)    | 8 | SBBF 256-bit, K=8, single-key         | **1.1** | **2.4** |
-| **unified** (this repo)       | 8 | single_key + prefetch lookahead       |   1.3  |   2.7  |
-| **batched** (this repo)       | 4 | SBBF 64-bit, K=4, 8-way SIMD batched  |   1.7  |   3.6  |
-| **classic** (this repo)       | 8 | textbook double-hashing, no blocking  |   7.4  |  15.4  |
-| Krassovsky PatternedSimd †    | ? | 64-bit blocks, 8-way SIMD batched     |  ~1.2  |   2.5  |
-| Apache Impala SBBF †          | 8 | 256-bit blocks, single-key            |  ~2.4  |  ~5    |
-| fastbloom (Rust, sbbf-AVX2) † | 8 | 256-bit blocks, single-key            |  ~3–5  |  ~6–10 |
+| Implementation                | K | Design                                | ns/op | cyc/op | FP rate |
+|-------------------------------|---|---------------------------------------|------:|-------:|--------:|
+| **single_key** (this repo)    | 8 | SBBF 256-bit, AVX2 mask, wymum hash   | **1.62** | **3.4** | 0.00034 |
+| **batched** (this repo)       | 4 | SBBF 64-bit, 8-way SIMD, no gather    |  2.84 |   6.0  | 0.00257 |
+| **unified** (this repo)       | 8 | single_key + prefetch                 |  2.03 |   4.3  | 0.00034 |
+| `bloom_krassovsky.c`          | 5 | 64-bit blocks, 8-way SIMD + gather    |  1.87 |   3.9  | 0.00346 |
+| `bloom_impala.c`              | 8 | 256-bit blocks, scalar bit-set, XXH64 | 17.53 |  36.8  | 0.00034 |
+| `bloom_classic.c`             | 8 | textbook double-hashing, no blocking  | 10.33 |  21.7  | 0.00016 |
+| fastbloom (Rust, sbbf-AVX2) † | 8 | 256-bit blocks, single-key            |  ~3–5 |  ~6–10 | -       |
 
-**FP-rate note:** `batched` uses K=4 vs K=8 elsewhere, so its FP rate is
-~10× higher at the same bits/key. The headline ns/op is not directly
-comparable across rows with different K — use `bench_all.py --target-fp X`
-for an apples-to-apples comparison.
+`bloom_krassovsky.c` is a faithful port of Save Buffer's
+`PatternedSimdBloomFilter` ([source](https://github.com/save-buffer/bloomfilter_benchmarks),
+MIT). `bloom_impala.c` is a faithful Apache Parquet SBBF (the same algorithm
+Impala and Arrow ship) — scalar bit-set with XXH64, no SIMD. The gap to
+`bloom_single_key.c` shows what the SIMD mask compute + wymum hash buys
+over a by-the-book SBBF.
 
-† Published cyc/op from upstream benchmarks, different hardware — the
-cycle count is the portable comparison. Sources:
+**FP rates differ across rows.** `batched` (K=4) and `krassovsky` (K=5,
+mask-table) report ~10× higher FP than `single_key` (K=8) at the same
+bits/key — so headline ns/op is not directly comparable. To compare at
+equal FP, run `bench_all.py --target-fp X`.
+
+† fastbloom is a Rust crate (`tomtomwombat/fastbloom`); not ported here.
+The cited number is from its public benchmarks on different hardware. Sources:
 [save-buffer/bloomfilter_benchmarks](https://github.com/save-buffer/bloomfilter_benchmarks),
 [Apache Impala](https://github.com/apache/impala),
 [fastbloom](https://github.com/tomtomwombat/fastbloom). All AVX2;
@@ -200,6 +211,8 @@ bloom_single_key.c   stub: PREFETCH_LOOKAHEAD=0, includes bloom_sbbf.c
 bloom_unified.c      stub: PREFETCH_LOOKAHEAD=8, includes bloom_sbbf.c
 bloom_batched.c      64-bit blocks + SIMD batched mask, scalar contains
 bloom_classic.c      textbook K-hash bloom, no blocking (baseline)
+bloom_impala.c       faithful Apache Parquet/Impala SBBF (external competitor)
+bloom_krassovsky.c   faithful Save Buffer PatternedSimd (external competitor)
 harness.py           compile + diff_test + benchmark infrastructure
 bench_all.py         run benchmarks across cache regimes; --target-fp for equal-FP
 test_bloom.py        correctness tests (fixed-length and variable-length keys)

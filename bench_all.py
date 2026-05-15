@@ -34,6 +34,10 @@ CANDIDATES = [
     ("bloom_single_key.c", "single_key  -- SBBF, no prefetch (best in-cache)"),
     ("bloom_unified.c",    "unified     -- SBBF + prefetch (good default)"),
     ("bloom_batched.c",    "batched     -- 64-bit blocks + 8-way SIMD"),
+    # External competitors:
+    ("bloom_impala.c",     "impala      -- Apache Parquet/Impala SBBF, scalar + XXH64"),
+    ("bloom_krassovsky.c", "krassovsky  -- Save Buffer PatternedSimd, 64-bit + gather"),
+    # Baseline:
     ("bloom_classic.c",    "classic     -- textbook K-hash bloom (baseline)"),
 ]
 

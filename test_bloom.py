@@ -19,6 +19,8 @@ CANDIDATES = [
     "bloom_single_key.c",
     "bloom_unified.c",
     "bloom_batched.c",
+    "bloom_impala.c",
+    "bloom_krassovsky.c",
     "bloom_classic.c",
 ]
 
