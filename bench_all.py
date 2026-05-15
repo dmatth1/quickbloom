@@ -7,8 +7,8 @@ hash+bloom path (what a real user pays) and the prehash path (algorithm
 only, comparable to published cyc/op figures) are measured.
 
 Usage:
-    python3 bench_all.py                 # all candidates, S+XL sizes
-    python3 bench_all.py --sizes S,M,L,XL
+    python3 bench_all.py                 # all candidates, S+M+L+XL sizes
+    python3 bench_all.py --sizes S,XL    # subset (endpoints only)
     python3 bench_all.py --no-prehash    # skip the prehash bench
     CC=clang python3 bench_all.py        # use clang (typically ~12% faster)
 """
@@ -88,9 +88,9 @@ def report_size(srcs, size, do_prehash):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--sizes", default="S,XL",
+    ap.add_argument("--sizes", default="S,M,L,XL",
                     help="comma-separated subset of S,M,L,XL "
-                         "(default: S,XL for the two endpoints)")
+                         "(default: full sweep S,M,L,XL across cache regimes)")
     ap.add_argument("--no-prehash", action="store_true")
     args = ap.parse_args()
 

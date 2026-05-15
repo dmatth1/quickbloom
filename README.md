@@ -17,11 +17,11 @@ optional `bloom_*_batch8` entry points.
 ## Quick start
 
 ```sh
-# Build + bench, all three candidates, two filter sizes (S in-L2 + XL out-of-L3)
+# Build + bench, all three candidates, full sweep across cache regimes
 CC=clang python3 bench_all.py
 
-# Full sweep across all cache regimes
-CC=clang python3 bench_all.py --sizes S,M,L,XL
+# Just the endpoints (faster — skip M and L)
+CC=clang python3 bench_all.py --sizes S,XL
 
 # Just the correctness tests
 python3 test_bloom.py
