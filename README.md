@@ -121,31 +121,45 @@ hold across modern x86, but the absolute ns/op will shift.
 
 ## Comparison to other designs
 
-In-cache (S = 128 KB filter) contains, prehash path, Sapphire Rapids
-@ 2.1 GHz — comparable to published `cyc/op` figures:
-
-| Implementation                | Design                              |  ns/op | cyc/op |
-|-------------------------------|-------------------------------------|-------:|-------:|
-| **single_key** (this repo)    | SBBF 256-bit, K=8, single-key       | **1.1** | **2.4** |
-| **unified** (this repo)       | single_key + prefetch lookahead     |   1.3  |   2.7  |
-| **batched** (this repo)       | SBBF 64-bit, K=4, AVX2 8-way batched |   2.0  |   4.2  |
-| Krassovsky PatternedSimd †    | 64-bit blocks, AVX2 8-way batched   |  ~1.2  |   2.5  |
-| Apache Impala SBBF †          | 256-bit blocks, AVX2 single-key     |  ~2.4  |  ~5    |
-| fastbloom (Rust, sbbf-AVX2) † | 256-bit blocks, AVX2 single-key     |  ~3-5  |  ~6–10 |
-
-† Published numbers from upstream READMEs / benchmark suites, measured
-on different hardware. The cycle count is the more portable comparison
-since absolute ns/op depends on clock and `vpmullo` latency. Sources:
+Each cell is **ns/op  /  cyc/op @ 2.1 GHz** (lower is better), measured
+on Sapphire Rapids prehash contains. Published numbers (†) are from
+upstream benchmark suites on different hardware; the cycle figure is the
+more portable comparison since absolute ns/op depends on clock and
+`vpmullo` latency. Sources:
 [save-buffer/bloomfilter_benchmarks](https://github.com/save-buffer/bloomfilter_benchmarks),
 [Apache Impala BloomFilter](https://github.com/apache/impala),
 [tomtomwombat/fastbloom](https://github.com/tomtomwombat/fastbloom).
 
-The headline finding: **`single_key` matches Krassovsky's *batched*
-published number on cycles, without batching the API.** He needs 8-way
-SIMD batching across 8 keys per call to hit 2.5 cyc; we hit 2.4 cyc per
-single-key call by using wider blocks (256-bit vs 64-bit) plus a
-128-bit-multiply hash (wymum). The wider block amortizes one cache
-line's worth of latency over more bits tested per key.
+### Single-key designs (one key per call)
+
+| Implementation                | S (128 KB)        | M (2 MB)          | L (32 MB)         | XL (512 MB)       |
+|-------------------------------|------------------:|------------------:|------------------:|------------------:|
+| **single_key** (this repo)    | **1.1  /  2.4**   | 1.8  /  3.7       | **6.1  /  13**    | 18.4  /  39       |
+| **unified** (this repo)       | 1.3  /  2.7       | **1.7  /  3.6**   | 6.2  /  13        | **17.4  /  37**   |
+| Apache Impala SBBF †          | —  /  ~5          | —                 | —                 | —                 |
+| fastbloom (Rust, sbbf-AVX2) † | —  /  ~6–10       | —                 | —                 | —                 |
+
+### Batched designs (8 keys per call)
+
+| Implementation                | S (128 KB)        | M (2 MB)          | L (32 MB)         | XL (512 MB)       |
+|-------------------------------|------------------:|------------------:|------------------:|------------------:|
+| **batched** (this repo)       | 2.0  /  4.2       | 2.2  /  4.6       | **5.5  /  12**    | **16.9  /  35**   |
+| Krassovsky PatternedSimd †    | ~1.2  /  2.5      | —                 | —                 | —                 |
+
+### Reading the table
+
+- **In-cache (S, M)**: single-key designs win overall. Our `single_key`
+  hits 2.4 cyc, beating Apache Impala's same-algorithm published ~5 cyc
+  by ~2× and matching Krassovsky's *batched* 2.5 cyc *without batching
+  the API*. The wider 256-bit blocks + wymum 128-bit-multiply hash
+  amortize cache-line latency over more bits tested per key.
+- **Out-of-cache (L, XL)**: batched wins overall — `batched` at 5.5 ns
+  (L) and 16.9 ns (XL) is bound by DRAM latency, and the 8-way SIMD
+  mask compute plus prefetch lookahead 16 hides it best. Note that this
+  win holds even when `batched` is called through the single-key API,
+  since the bulk path batches internally.
+- Published references mostly publish only in-cache figures, hence the
+  "—" cells.
 
 ### Variants we tried and rejected
 
