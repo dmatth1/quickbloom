@@ -1,15 +1,18 @@
-# Parquet Bloom across the ecosystem: the scalar-probe opportunity
+# Porting arrow-go's AVX2 SBBF probe to the C++ family
 
-Every native Parquet reader I could find ships a **scalar** Split
-Block Bloom Filter probe — despite the format being designed in 2018
-around 256-bit blocks (one `__m256i` register) and eight 32-bit SALT
-constants that map directly onto AVX2 lanes.
+arrow-go shipped AVX2/SSE4/NEON Parquet SBBF probes in 18.3.0
+([PR #336](https://github.com/apache/arrow-go/pull/336)). Apache
+Impala and Kudu shipped AVX2 SBBF probes years before that. The
+other three big native readers — arrow-cpp, arrow-rs, and Velox —
+still ship the scalar pseudocode reference, line-for-line identical
+across all three.
 
 The on-disk format is locked by the Parquet spec; the probe
 *implementation* is not. An AVX2 drop-in is bit-identical to the
-scalar reference and 3–5× faster in-cache.
+scalar reference and 3–5× faster in-cache on the probe
+microbenchmark. This document is the upstream pitch.
 
-## The three scalar implementations
+## The three still-scalar implementations
 
 Pulled directly from upstream on 2026-05-15.
 
@@ -141,13 +144,16 @@ produces eight 32-bit products each equal to scalar `key * SALT[i]`;
 `_mm256_testc_si256` returns 1 iff `(~block & mask) == 0` — exactly
 the condition "every mask bit is set in the block."
 
-## Why nobody did this already
+## Why the C++ family is still scalar
+
+Other implementations did SIMD this years ago — Impala and Kudu in
+their native bloom code, arrow-go in 18.3.0. The C++ family stuck
+with the scalar reference for two reasons:
 
 1. **The spec ships a scalar pseudocode reference**, and the first
-   C++/Rust implementations were faithful ports. Once a working
-   reference existed, the natural reuse path was to fork it; the fork
-   inherits the scalar probe. Apache Arrow C++ is the original; Velox
-   copied it; arrow-rs ported it.
+   C++/Rust implementations were faithful ports. Apache Arrow C++
+   is the original; Velox copied it; arrow-rs ported it. The fork
+   chain inherited the scalar shape.
 2. **Compilers don't auto-vectorize the early-exit loop** into
    `_mm256_testc_si256`. The early `return false` prevents the
    compiler from proving equivalence with a horizontal AND-test
@@ -155,7 +161,7 @@ the condition "every mask bit is set in the block."
    generated code is 8 scalar loads + 8 branches.
 
 Both go away with a manually-vectorized probe behind a runtime AVX2
-feature check.
+feature check — which is exactly what arrow-go did.
 
 ## Blast radius
 
