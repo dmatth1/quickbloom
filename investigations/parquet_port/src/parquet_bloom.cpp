@@ -41,22 +41,19 @@ bool filter::find_scalar(uint64_t hash) const {
 }
 
 // (2) xsimd drop-in. Same Parquet-spec layout, same SALT order, same bit
-//     positions. The mask compute uses xsimd::batch<uint32_t> ops which
-//     lower to vpmulld + vpsrld + vpsllvd on AVX2 (and to the equivalent
-//     NEON/AVX-512 sequences on those targets).
+//     positions. All ops are public xsimd APIs; no #ifdef, no escape
+//     hatch to raw intrinsics. On an AVX2 build the probe lowers to
+//     vpand (mask compute) + vpandn + vptest + setz.
 //
-//     The "all mask bits set in block" reduction is one place xsimd's
-//     public API costs us: `xsimd::all((blk & mask) == mask)` lowers
-//     to vpand + vpcmpeqd + vpcmpeqd(allones) + vptest + setb (5 ops)
-//     whereas the natural primitive is a single `_mm256_testc_si256`.
-//     xsimd uses testc internally for `all(batch_bool)` but doesn't
-//     expose `testc(batch, batch)` publicly. We reach for the raw
-//     intrinsic here and let other archs fall back to the portable
-//     reduction. (A proper fix is a small xsimd PR adding
-//     `xsimd::testc(batch, batch)` as a portable primitive.)
+//     The "all mask bits set in block" test is rewritten from
+//     `xsimd::all((blk & mask) == mask)` (5 ops on AVX2) to
+//     `xsimd::none(as_bool(~blk & mask))` (2 ops on AVX2). Equivalent
+//     condition, single vptest. Routes through xsimd::any/none on
+//     batch_bool, which already uses vptest internally via testz.
 namespace {
 
 using batch_t = xsimd::batch<uint32_t>;
+using bool_t  = xsimd::batch_bool<uint32_t>;
 static_assert(batch_t::size == kBitsSetPerBlock,
               "Parquet SBBF expects an 8-lane SIMD batch; this build's "
               "default xsimd batch isn't 8 wide. AVX2/AVX-512 builds get "
@@ -76,15 +73,23 @@ inline batch_t load_block(const uint8_t* data, uint32_t bucket_index) {
         data + bucket_index * kBytesPerFilterBlock));
 }
 
+// Reinterpret a batch's raw bit pattern as a batch_bool. The reduction
+// xsimd::none/any on batch_bool uses testz on the underlying register
+// (any bit set anywhere -> true), which is the semantics we want for
+// "is this batch the all-zero register?". The two public ctors
+// `batch_bool(register_type)` and `batch::operator register_type()`
+// combine to give a portable no-op reinterpret.
+inline bool_t as_batch_bool(batch_t b) noexcept {
+    return bool_t(typename bool_t::register_type(b));
+}
+
 // "Are all bits set in `mask` also set in `blk`?" -- one vptest on AVX2.
+//   testc semantics:        (~blk & mask) == 0
+//   xsimd::bitwise_andnot(a, b) lowers to _mm256_andnot_si256(b, a) = ~b & a.
+//   So bitwise_andnot(mask, blk) = ~blk & mask, exactly what we want.
+//   xsimd::none(batch_bool) lowers to _mm256_testz_si256(self, self).
 inline bool all_mask_bits_set(batch_t blk, batch_t mask) {
-#if defined(__AVX__)
-    return _mm256_testc_si256(__m256i(blk), __m256i(mask)) != 0;
-#else
-    // Portable fallback. xsimd::all(...) is currently 5 ops on AVX2,
-    // but on other archs (NEON, AVX-512) it's already the natural shape.
-    return xsimd::all((blk & mask) == mask);
-#endif
+    return xsimd::none(as_batch_bool(xsimd::bitwise_andnot(mask, blk)));
 }
 
 }  // namespace

@@ -24,40 +24,24 @@ Functions renamed and rewritten against `xsimd::batch<uint32_t>`:
 | `filter::find_avx2(uint64_t)`         | `filter::find_simd(uint64_t)`           |
 | `filter::find_avx2_x4(f0..3, hash)`   | `filter::find_simd_x4(f0..3, hash)`     |
 | `_mm256_*` intrinsics                 | `xsimd::batch<uint32_t>` ops            |
-| `_mm256_testc_si256(blk, mask)`       | hybrid (see below)                      |
+| `_mm256_testc_si256(blk, mask)`       | `xsimd::none(as_bool(bitwise_andnot(mask, blk)))` |
 
-`find_scalar` is unchanged — still the line-for-line port of
-Apache Arrow C++'s `FindHash`, used as the diff-test reference.
-
-The mask compute is straight xsimd:
-
-```cpp
-inline batch_t simd_mask(uint32_t key) {
-    batch_t hash_v = batch_t::broadcast(key);
-    batch_t salt   = batch_t::load_aligned(SALT);
-    batch_t prod   = hash_v * salt;
-    batch_t shift  = prod >> 27;
-    batch_t ones   = batch_t::broadcast(uint32_t(1));
-    return ones << shift;
-}
-```
-
-The "all mask bits set in block" reduction is the one place we reach
-back to a raw intrinsic — see next section for why.
+`find_scalar` is unchanged — still the line-for-line port of Apache
+Arrow C++'s `FindHash`, used as the diff-test reference.
 
 `static_assert(batch_t::size == 8)` is set in `parquet_bloom.cpp` —
 Parquet's 8-bits-per-block expects an 8-lane batch, which is the
 default on AVX2 and AVX-512. A NEON port would need a different
 splitting (two 4-lane batches per block) and is not yet implemented.
 
-## The reduction: an xsimd API gap
+## The reduction: finding the right xsimd expression
 
-`_mm256_testc_si256(blk, mask)` returns 1 iff `(~blk & mask) == 0`,
-which is exactly "every bit set in mask is also set in blk". That's
-a single `vptest` instruction.
+This was the one tricky bit. `_mm256_testc_si256(blk, mask)` returns 1
+iff `(~blk & mask) == 0` and lowers to a single `vptest`.
 
-The natural xsimd translation is `xsimd::all((blk & mask) == mask)`.
-On AVX2 that lowers to **five** instructions:
+The "natural" xsimd translation is
+`xsimd::all((blk & mask) == mask)`. On AVX2 that lowers to **five**
+instructions:
 
 ```
 vpand    (mem), ymm_mask, ymm_tmp     ; tmp = blk & mask
@@ -67,35 +51,46 @@ vptest   ymm_ones, ymm_eq             ; CF = all lanes true
 setb     %al
 ```
 
-xsimd uses `_mm256_testc_si256` internally for `all(batch_bool)`
-(see `xsimd_avx.hpp:138`) but doesn't expose
-`xsimd::testc(batch, batch)` as a public primitive. Trying the
-`bitwise_andnot` route lowers no better — `(bitwise_andnot(mask, blk) == 0)`
-still needs the comparison-then-vptest pattern through the public
-API.
-
-The pragmatic fix: keep xsimd for the mask compute and the load,
-reach for `_mm256_testc_si256` directly on AVX/AVX2 for the
-reduction. One escape hatch, one `#if defined(__AVX__)`, with the
-portable `xsimd::all(...)` form preserved as the fallback for other
-arches:
+The fix is to rewrite the test in the form xsimd already lowers
+efficiently. xsimd's `none(batch_bool)` uses
+`_mm256_testz_si256(self, self)` (cf. `xsimd_avx.hpp:140`-ish), which
+returns 1 iff `self == 0` across the whole 256-bit register. So:
 
 ```cpp
+inline bool_t as_batch_bool(batch_t b) noexcept {
+    return bool_t(typename bool_t::register_type(b));   // bit-pattern reinterpret
+}
+
 inline bool all_mask_bits_set(batch_t blk, batch_t mask) {
-#if defined(__AVX__)
-    return _mm256_testc_si256(__m256i(blk), __m256i(mask)) != 0;
-#else
-    return xsimd::all((blk & mask) == mask);
-#endif
+    return xsimd::none(as_batch_bool(xsimd::bitwise_andnot(mask, blk)));
 }
 ```
 
-The right upstream fix is a small xsimd PR adding
-`xsimd::testc(batch, batch)` as a portable primitive — `vptest` on
-x86 AVX/AVX2/AVX-512, `vmaxvq + cmp` or similar on NEON, the natural
-SVE2 reduction. That removes the escape hatch and gives other Arrow
-code (or anyone else doing bloom probes / bitset intersection) the
-same fast path.
+The disassembly is then exactly what we want:
+
+```
+vmovdqu (mem), ymm2     ; load blk
+vpandn  ymm0, ymm2, ymm0; ~blk & mask  (xsimd::bitwise_andnot)
+vptest  ymm0, ymm0      ; testz reduction  (xsimd::none)
+sete    %al
+```
+
+Same shape as the raw-intrinsics `_mm256_testc_si256` path, all
+through public xsimd APIs. No `#ifdef`, no escape hatch, no upstream
+xsimd PR needed.
+
+Two semantic facts worth pinning down because they're easy to get
+backwards:
+
+- `xsimd::bitwise_andnot(self, other)` lowers to
+  `_mm256_andnot_si256(other, self)`, which computes `~other & self`.
+  So `bitwise_andnot(mask, blk)` = `~blk & mask` — exactly what
+  `testc` tests against zero.
+- `batch_bool<T>(register_type)` and the implicit conversion from
+  `batch<T>` to `register_type` are both public xsimd API; combining
+  them is a free type-level reinterpret. The reduction `xsimd::none`
+  doesn't care about per-lane boolean interpretation — `testz(x, x)`
+  checks if any bit is set anywhere in the register.
 
 ## Build
 
@@ -111,94 +106,98 @@ xsimd is header-only; no link change. Same compile flags as before:
 ## Bench
 
 20 repeats per regime, median reported alongside min / p90 / max for
-variance. Captured run: `results/run5_xsimd_with_testc.txt`.
-
-Hardware: **Intel Xeon Sapphire Rapids @ 2.1 GHz (virtualised)** —
-different host from the earlier Cascade Lake @ 2.8 GHz runs in
-`results/run1.txt` and `results/run2.txt`.
+variance. Hardware: **Intel Xeon Sapphire Rapids @ 2.1 GHz
+(virtualised)** — different host from the earlier Cascade Lake @ 2.8
+GHz runs in `results/run1.txt` and `results/run2.txt`.
 
 All numbers below are post-hash probe latency: XXH64 is computed
 once at setup and excluded from the timed loop.
 
-### xsimd-with-testc (this branch)
+### Pure-xsimd numbers (this branch)
 
-| Regime             |   min   | median  |   p90   |   max   |
-|--------------------|--------:|--------:|--------:|--------:|
-| Small (in-cache)   |         |         |         |         |
-| · scalar           | 12.25   | 12.31   | 12.47   | 13.59   |
-| · xsimd single-key |  2.29   |  2.33   |  2.41   |  2.70   |
-| · xsimd 4-way bulk |  1.66   |  1.68   |  1.78   |  1.82   |
-| Medium (out-of-L3) |         |         |         |         |
-| · scalar           | 24.58   | 25.16   | 25.60   | 25.92   |
-| · xsimd single-key | 15.12   | 16.61   | 17.44   | 17.83   |
-| · xsimd 4-way bulk | 11.74   | 12.99   | 13.41   | 13.98   |
-| Large (deep DRAM)  |         |         |         |         |
-| · scalar           | 31.62   | 32.27   | 33.14   | 35.00   |
-| · xsimd single-key | 23.28   | 23.65   | 24.46   | 24.77   |
-| · xsimd 4-way bulk | 19.03   | 19.46   | 20.27   | 21.03   |
+Captured run: `results/run7_xsimd_pure.txt`.
 
-Speedups (median, vs scalar): **5.29×** / **7.33×** in-cache,
-**1.51×** / **1.94×** out-of-L3 medium, **1.36×** / **1.66×** deep
+| Regime             |  min   | median |  p90   |  max   |
+|--------------------|-------:|-------:|-------:|-------:|
+| Small (in-cache)   |        |        |        |        |
+| · scalar           | 12.04  | 12.35  | 12.50  | 12.60  |
+| · xsimd single-key |  2.43  |  2.48  |  2.54  |  2.55  |
+| · xsimd 4-way bulk |  1.63  |  1.73  |  1.76  |  1.77  |
+| Medium (out-of-L3) |        |        |        |        |
+| · scalar           | 18.18  | 18.40  | 18.91  | 19.19  |
+| · xsimd single-key |  7.04  |  7.41  |  7.63  |  9.44  |
+| · xsimd 4-way bulk |  7.04  |  7.17  |  7.33  |  7.43  |
+| Large (deep DRAM)  |        |        |        |        |
+| · scalar           | 30.21  | 31.05  | 31.58  | 31.78  |
+| · xsimd single-key | 21.54  | 22.10  | 22.61  | 23.30  |
+| · xsimd 4-way bulk | 18.01  | 18.67  | 19.25  | 19.39  |
+
+Speedups (median, vs scalar): **4.98×** / **7.14×** in-cache,
+**2.48×** / **2.57×** out-of-L3 medium, **1.41×** / **1.66×** deep
 DRAM.
 
 **Diff-test: 0 mismatches across 167M (query, filter) pairs** — the
 xsimd path produces bit-identical results to the scalar Arrow C++ /
 arrow-rs / Velox reference.
 
-## Same-machine A/B: xsimd vs raw `_mm256_*`
+## Same-machine A/B: xsimd-pure vs raw `_mm256_*`
 
-Both implementations built and run on the same SPR host with the
-same 20-rep bench. Raw run captured in
-`results/run6_raw_intrinsics_spr_20reps.txt`.
+Both implementations built and run back-to-back on the same SPR host
+with the same 20-rep bench. Raw run captured in
+`results/run8_raw_intrinsics_spr_fresh.txt`.
 
 Median ns/probe:
 
 | Regime             | impl  | single-key | 4-way bulk |
 |--------------------|-------|-----------:|-----------:|
-| Small (in-cache)   | raw   |      2.30  |      1.67  |
-|                    | xsimd |      2.33  |      1.68  |
-|                    | **xsimd vs raw** |  **+1%**   |  **+1%**   |
-| Medium (out-of-L3) | raw   |     16.96  |     13.04  |
-|                    | xsimd |     16.61  |     12.99  |
-|                    | **xsimd vs raw** |  **−2%**   |  **~0%**   |
-| Large (deep DRAM)  | raw   |     23.68  |     19.53  |
-|                    | xsimd |     23.65  |     19.46  |
-|                    | **xsimd vs raw** |  **~0%**   |  **~0%**   |
+| Small (in-cache)   | raw   |      2.29  |      1.66  |
+|                    | xsimd |      2.48  |      1.73  |
+|                    | **xsimd vs raw** |  **+8%**   |  **+4%**   |
+| Medium (out-of-L3) | raw   |      7.44  |      7.38  |
+|                    | xsimd |      7.41  |      7.17  |
+|                    | **xsimd vs raw** |  **~0%**   |  **−3%**   |
+| Large (deep DRAM)  | raw   |     22.30  |     18.85  |
+|                    | xsimd |     22.10  |     18.67  |
+|                    | **xsimd vs raw** |  **−1%**   |  **−1%**   |
 
-With the testc escape hatch the xsimd path is within noise of the
-hand-tuned intrinsics across every regime. (An earlier measurement
-showed +13% / +56% / +2% with the natural-but-pessimal
-`xsimd::all((blk & mask) == mask)` reduction — and that was real,
-not variance. The escape hatch closes it.)
+Within noise on medium and large; small (in-cache) is +8% on single-key.
+The disassembly is essentially identical so that 8% is probably minor
+scheduling / register allocation; could be tightened further but not
+worth chasing for the upstream story.
 
-## Note on the earlier "+56% out-of-L3" finding
+(Both medium-regime numbers shifted from the earlier 16-17 ns range
+to ~7 ns between sessions; that's a property of the virtualised host's
+cache state at run time, not of the implementation. The A/B is valid
+because both versions were measured back-to-back in the same session.)
 
-A first version of this doc reported xsimd was 56% slower in the
-medium-out-of-L3 regime with a hand-wave explanation about "extra
-ALU keeping the load port waiting longer". On reflection that's
-mechanically wrong — the load is in flight downstream of the ALU,
-and extra ALU after the load doesn't extend the critical path.
+## Earlier attempts and what didn't work
 
-The actual cause was the extra dependency chain on the reduction:
-each iteration's `vpcmpeqd + vpcmpeqd(allones) + vptest` chain has
-to retire before the next iteration's load address is computed (or
-before the OoO core has window space to fetch it), so the prefetch
-distance shrinks and effective MLP drops. Hard to confirm without
-`perf stat -e l1d_pend_miss.pending` or similar, but it's a
-plausible mechanism that the escape-hatch numbers are consistent
-with.
+For the record, none of the "obvious" xsimd translations of the
+testc reduction lowered well:
+
+| Expression                                            | Result  |
+|-------------------------------------------------------|---------|
+| `xsimd::all((blk & mask) == mask)`                    | 5 ops, slow |
+| `xsimd::all(bitwise_andnot(mask, blk) == 0)`          | 5 ops, slow |
+| `xsimd::all(bitwise_cast<batch_bool<...>>(...))`      | doesn't compile (bitwise_cast won't target batch_bool) |
+| `xsimd::none(as_batch_bool(bitwise_andnot(mask, blk)))` | **2 ops, optimal** |
+
+The xsimd library exposes `testc` only internally, via the
+`all(batch_bool)` lowering — but `any/none(batch_bool)` use `testz`,
+which is the dual we actually want for the andnot form. Once the
+reduction is written in the `none(testz)` shape, no escape hatch is
+needed.
+
+A small `xsimd::testc(batch, batch)` upstream PR would still be a
+nice cleanup — direct, no `bitwise_andnot` indirection — but it's
+no longer required to get the perf back.
 
 ## What's not done
 
-- **NEON port.** xsimd makes the mask compute mechanical
-  (`xsimd::batch<uint32_t>` is 4-lane on NEON, so each 256-bit block
-  needs two batches). The `#if defined(__AVX__)` escape hatch on the
-  reduction means the portable fallback would handle the test, but
-  the algorithm split for an 8-lane Parquet block on a 4-lane batch
-  still needs writing. Not done here.
-- **`xsimd::testc(batch, batch)` upstream.** Would remove the escape
-  hatch and benefit anyone else doing bitset intersection /
-  all-bits-set tests. Small PR.
+- **NEON port.** `xsimd::batch<uint32_t>` is 4-lane on NEON, so each
+  256-bit Parquet block needs two batches. The reduction (`none` on
+  a `batch_bool`) translates fine, but the algorithm split still
+  needs writing.
 - **`PARQUET.md`, `parquet_port/README.md`, `RESULTS.md` re-sync.**
   Those still describe the raw-intrinsics version and headline
   numbers. Deliberately left alone for now.

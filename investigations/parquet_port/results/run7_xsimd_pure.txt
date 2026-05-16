@@ -1,0 +1,33 @@
+Parquet bloom port: scalar (arrow-cpp / arrow-rs / velox shape)
+                  vs xsimd drop-in on the same Parquet-spec layout
+XXH64 self-test: OK
+
+=== small (in-cache) ===
+  64 row groups x 8 KiB each = 0.5 MiB total filter footprint
+  4096 keys per filter, 50000 query values
+  diff-test: 3200000 probes, 0 mismatches.
+                                                  min    median   p90    max
+  scalar (arrow-cpp/arrow-rs/velox shape):       12.04   12.35   12.50  12.60  ns/probe
+  xsimd single-key (drop-in, same layout):        2.43    2.48    2.54   2.55  ns/probe
+  xsimd 4-way unroll across row groups:           1.63    1.73    1.76   1.77  ns/probe
+  -> 4.98x single-key (median), 7.14x with 4-way (median)
+
+=== medium (out-of-L3, 128 MiB) ===
+  4096 row groups x 32 KiB each = 128.0 MiB total filter footprint
+  16000 keys per filter, 20000 query values
+  diff-test: 81920000 probes, 0 mismatches.
+                                                  min    median   p90    max
+  scalar (arrow-cpp/arrow-rs/velox shape):       18.18   18.40   18.91  19.19  ns/probe
+  xsimd single-key (drop-in, same layout):        7.04    7.41    7.63   9.44  ns/probe
+  xsimd 4-way unroll across row groups:           7.04    7.17    7.33   7.43  ns/probe
+  -> 2.48x single-key (median), 2.57x with 4-way (median)
+
+=== large (deep out-of-L3, 1 GiB) ===
+  16384 row groups x 64 KiB each = 1024.0 MiB total filter footprint
+  32000 keys per filter, 5000 query values
+  diff-test: 81920000 probes, 0 mismatches.
+                                                  min    median   p90    max
+  scalar (arrow-cpp/arrow-rs/velox shape):       30.21   31.05   31.58  31.78  ns/probe
+  xsimd single-key (drop-in, same layout):       21.54   22.10   22.61  23.30  ns/probe
+  xsimd 4-way unroll across row groups:          18.01   18.67   19.25  19.39  ns/probe
+  -> 1.41x single-key (median), 1.66x with 4-way (median)
