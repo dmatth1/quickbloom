@@ -43,8 +43,17 @@ bool filter::find_scalar(uint64_t hash) const {
 // (2) xsimd drop-in. Same Parquet-spec layout, same SALT order, same bit
 //     positions. The mask compute uses xsimd::batch<uint32_t> ops which
 //     lower to vpmulld + vpsrld + vpsllvd on AVX2 (and to the equivalent
-//     NEON/AVX-512 sequences on those targets). The "all mask bits set
-//     in the loaded block" test is `xsimd::all((blk & mask) == mask)`.
+//     NEON/AVX-512 sequences on those targets).
+//
+//     The "all mask bits set in block" reduction is one place xsimd's
+//     public API costs us: `xsimd::all((blk & mask) == mask)` lowers
+//     to vpand + vpcmpeqd + vpcmpeqd(allones) + vptest + setb (5 ops)
+//     whereas the natural primitive is a single `_mm256_testc_si256`.
+//     xsimd uses testc internally for `all(batch_bool)` but doesn't
+//     expose `testc(batch, batch)` publicly. We reach for the raw
+//     intrinsic here and let other archs fall back to the portable
+//     reduction. (A proper fix is a small xsimd PR adding
+//     `xsimd::testc(batch, batch)` as a portable primitive.)
 namespace {
 
 using batch_t = xsimd::batch<uint32_t>;
@@ -67,6 +76,17 @@ inline batch_t load_block(const uint8_t* data, uint32_t bucket_index) {
         data + bucket_index * kBytesPerFilterBlock));
 }
 
+// "Are all bits set in `mask` also set in `blk`?" -- one vptest on AVX2.
+inline bool all_mask_bits_set(batch_t blk, batch_t mask) {
+#if defined(__AVX__)
+    return _mm256_testc_si256(__m256i(blk), __m256i(mask)) != 0;
+#else
+    // Portable fallback. xsimd::all(...) is currently 5 ops on AVX2,
+    // but on other archs (NEON, AVX-512) it's already the natural shape.
+    return xsimd::all((blk & mask) == mask);
+#endif
+}
+
 }  // namespace
 
 bool filter::find_simd(uint64_t hash) const {
@@ -76,7 +96,7 @@ bool filter::find_simd(uint64_t hash) const {
 
     batch_t mask = simd_mask(key);
     batch_t blk  = load_block(data_.data(), bucket_index);
-    return xsimd::all((blk & mask) == mask);
+    return all_mask_bits_set(blk, mask);
 }
 
 // (3) 4-way unrolled probe across row-group filters. Each filter is
@@ -97,10 +117,10 @@ int filter::find_simd_x4(const filter* f0, const filter* f1,
     batch_t v2 = load_block(f2->data_.data(), bucket(f2));
     batch_t v3 = load_block(f3->data_.data(), bucket(f3));
 
-    return int(xsimd::all((v0 & mask) == mask))
-         + int(xsimd::all((v1 & mask) == mask))
-         + int(xsimd::all((v2 & mask) == mask))
-         + int(xsimd::all((v3 & mask) == mask));
+    return int(all_mask_bits_set(v0, mask))
+         + int(all_mask_bits_set(v1, mask))
+         + int(all_mask_bits_set(v2, mask))
+         + int(all_mask_bits_set(v3, mask));
 }
 
 }  // namespace parquet_bloom

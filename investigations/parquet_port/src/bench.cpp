@@ -83,9 +83,18 @@ static void diff_test(const Setup& s) {
     fprintf(stdout, "  diff-test: %zu probes, 0 mismatches.\n", total);
 }
 
-struct Result { double scalar_ns, simd_ns, simdx4_ns; };
+struct Stat { double min, median, p90, max; };
+static Stat summarise(std::vector<double>& v) {
+    std::sort(v.begin(), v.end());
+    auto pct = [&](double p) {
+        size_t i = size_t(p * (v.size() - 1));
+        return v[i];
+    };
+    return { v.front(), pct(0.5), pct(0.9), v.back() };
+}
+struct Result { Stat scalar, simd, simdx4; };
 
-static Result bench_one(const Setup& s, int repeats = 5) {
+static Result bench_one(const Setup& s, int repeats = 20) {
     std::vector<double> scalar_ns, simd_ns, simdx4_ns;
     int nf = int(s.filters.size());
     for (int rep = 0; rep < repeats + 1; rep++) {
@@ -124,12 +133,7 @@ static Result bench_one(const Setup& s, int repeats = 5) {
             simdx4_ns.push_back(x4_ns);
         }
     }
-    std::sort(scalar_ns.begin(), scalar_ns.end());
-    std::sort(simd_ns.begin(),   simd_ns.end());
-    std::sort(simdx4_ns.begin(), simdx4_ns.end());
-    return { scalar_ns[scalar_ns.size()/2],
-             simd_ns[simd_ns.size()/2],
-             simdx4_ns[simdx4_ns.size()/2] };
+    return { summarise(scalar_ns), summarise(simd_ns), summarise(simdx4_ns) };
 }
 
 static void run_regime(const char* label, int n_filters, size_t filter_bytes,
@@ -145,22 +149,20 @@ static void run_regime(const char* label, int n_filters, size_t filter_bytes,
     Result r = bench_one(s);
 
     size_t total_probes = s.query_hashes.size() * size_t(n_filters);
-    double scalar_per = r.scalar_ns / double(total_probes);
-    double simd_per   = r.simd_ns   / double(total_probes);
-    double x4_per     = r.simdx4_ns / double(total_probes);
-    printf("  scalar (arrow-cpp/arrow-rs/velox shape):       %.2f ns/probe\n", scalar_per);
-    printf("  xsimd single-key (drop-in, same layout):       %.2f ns/probe\n", simd_per);
-    printf("  xsimd 4-way unroll across row groups:          %.2f ns/probe\n", x4_per);
-    printf("  -> %.2fx single-key, %.2fx with 4-way across row groups\n",
-           scalar_per / simd_per, scalar_per / x4_per);
-
-    printf("  per simulated `WHERE col = 'X'` query (= %d row group probes):\n",
-           n_filters);
-    printf("    scalar: %.2f us  /  xsimd: %.2f us  /  xsimd-x4: %.2f us  /  savings (best): %.2f us\n",
-           scalar_per * n_filters / 1000.0,
-           simd_per   * n_filters / 1000.0,
-           x4_per     * n_filters / 1000.0,
-           (scalar_per - x4_per) * n_filters / 1000.0);
+    auto per = [&](Stat st) {
+        return Stat{ st.min/total_probes, st.median/total_probes,
+                     st.p90/total_probes, st.max/total_probes };
+    };
+    Stat sc = per(r.scalar), si = per(r.simd), x4 = per(r.simdx4);
+    printf("                                                  min    median   p90    max\n");
+    printf("  scalar (arrow-cpp/arrow-rs/velox shape):       %5.2f   %5.2f   %5.2f  %5.2f  ns/probe\n",
+           sc.min, sc.median, sc.p90, sc.max);
+    printf("  xsimd single-key (drop-in, same layout):       %5.2f   %5.2f   %5.2f  %5.2f  ns/probe\n",
+           si.min, si.median, si.p90, si.max);
+    printf("  xsimd 4-way unroll across row groups:          %5.2f   %5.2f   %5.2f  %5.2f  ns/probe\n",
+           x4.min, x4.median, x4.p90, x4.max);
+    printf("  -> %.2fx single-key (median), %.2fx with 4-way (median)\n",
+           sc.median / si.median, sc.median / x4.median);
 }
 
 int main() {
