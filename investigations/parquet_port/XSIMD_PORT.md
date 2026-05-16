@@ -89,24 +89,84 @@ repeats.
 xsimd path produces bit-identical results to the scalar Arrow C++ /
 arrow-rs / Velox reference.
 
-## Comparison to the raw-intrinsics numbers
+## Same-machine A/B: xsimd vs raw `_mm256_*`
 
-Earlier raw-`_mm256_*` numbers on Cascade Lake @ 2.8 GHz
-(`results/run2.txt`) for reference:
+Both implementations built and run on the same SPR host. Raw run
+captured in `results/run4_raw_intrinsics_spr.txt`:
 
-| Regime             | scalar    | AVX2 single-key    | AVX2 4-way bulk    |
-|--------------------|----------:|-------------------:|-------------------:|
-| Small (in-cache)   |  12.73 ns |   3.70 (3.44×)     |   2.36 (5.40×)     |
-| Medium (out-of-L3) |  35.84 ns |  29.18 (1.23×)     |  22.79 (1.57×)     |
-| Large (deep DRAM)  |  41.41 ns |  35.90 (1.15×)     |  27.75 (1.49×)     |
+| Regime             | impl     | single-key ns/probe | 4-way ns/probe |
+|--------------------|----------|--------------------:|---------------:|
+| Small (in-cache)   | raw      |                2.22 |           1.57 |
+|                    | xsimd    |                2.50 |           1.82 |
+|                    | **xsimd vs raw** |    **+13%** |       **+16%** |
+| Medium (out-of-L3) | raw      |               15.08 |          12.01 |
+|                    | xsimd    |               23.46 |          15.28 |
+|                    | **xsimd vs raw** |    **+56%** |       **+27%** |
+| Large (deep DRAM)  | raw      |               30.29 |          25.72 |
+|                    | xsimd    |               31.02 |          26.28 |
+|                    | **xsimd vs raw** |     **+2%** |        **+2%** |
 
-Two things changed between the runs: the implementation (raw → xsimd)
-and the host (Cascade Lake → Sapphire Rapids). Absolute numbers
-shifted in both directions but the ratios are the same shape — xsimd
-lowers to the same instruction sequence as the raw intrinsics on an
-AVX2 build, so the implementation change alone shouldn't move the
-ratio meaningfully on a single host. Cleanest A/B would be both
-implementations on the same machine; not yet captured.
+The xsimd path is consistently slower than the hand-tuned intrinsics.
+Both are still much faster than scalar (xsimd is 4.3× vs scalar
+in-cache; raw is 4.8×), and both diff-test bit-identical to the
+scalar reference.
+
+### Why xsimd is slower
+
+`xsimd` has no direct equivalent of `_mm256_testc_si256` for our
+use case. The "all mask bits set in block" test compiles to:
+
+```
+vpand    (mem), ymm_mask, ymm_tmp     ; tmp = blk & mask
+vpcmpeqd ymm_tmp, ymm_mask, ymm_eq    ; per-lane (tmp == mask)
+vpcmpeqd ymm_ones, ymm_ones, ymm_ones ; sentinel all-ones
+vptest   ymm_ones, ymm_eq             ; CF = all lanes true
+setb     %al
+```
+
+Five instructions vs the raw version's single `vptest` (which
+computes `(~blk & mask) == 0` directly). On a 7-cycle hot path the
+extra ops aren't free.
+
+The out-of-L3 medium regime sees the biggest gap (+56%) because the
+per-probe latency there is dominated by L3-miss-but-DRAM-pageHit
+loads, and the extra ALU keeps the load port waiting longer. The
+deep-DRAM regime narrows back to noise (+2%) because DRAM latency
+dominates regardless.
+
+### Trade-off
+
+| Axis                          | Raw `_mm256_*`            | xsimd                                       |
+|-------------------------------|---------------------------|---------------------------------------------|
+| In-cache probe latency        | 2.22 ns                   | 2.50 ns (+13%)                              |
+| Out-of-L3 probe latency       | 15.08 ns                  | 23.46 ns (+56%)                             |
+| Deep-DRAM probe latency       | 30.29 ns                  | 31.02 ns (+2%)                              |
+| Speedup over scalar (in-cache) | 4.81×                    | 4.32×                                       |
+| Portability                   | x86 AVX2 only             | x86 AVX/AVX2/AVX-512 + ARM NEON/SVE2 + more |
+| Upstream Arrow alignment      | No                        | Yes (Arrow already uses xsimd elsewhere)    |
+| Diff-test vs scalar           | 0 mismatches / 167M       | 0 mismatches / 167M                         |
+
+So the answer to "does xsimd affect anything other than compatibility"
+is: yes, it costs measurable probe latency, especially out-of-L3.
+The choice is: ship the abstraction Arrow already uses (xsimd) at
+some perf cost, or ship hand-tuned intrinsics behind manual dispatch
+(faster but a divergence from house style).
+
+For the upstream pitch, xsimd is the right answer — the perf gap is
+real but the path is still a clear win over scalar, and the
+maintainer asked for it explicitly. Worth flagging in the PR
+description so reviewers know the choice is informed.
+
+### Older Cascade Lake numbers (different machine, raw intrinsics)
+
+Captured earlier in `results/run2.txt` on Cascade Lake @ 2.8 GHz for
+reference. Different hardware, raw-intrinsics implementation:
+
+| Regime             | scalar   | AVX2 single-key | AVX2 4-way bulk |
+|--------------------|---------:|----------------:|----------------:|
+| Small (in-cache)   | 12.73 ns | 3.70 (3.44×)    | 2.36 (5.40×)    |
+| Medium (out-of-L3) | 35.84 ns | 29.18 (1.23×)   | 22.79 (1.57×)   |
+| Large (deep DRAM)  | 41.41 ns | 35.90 (1.15×)   | 27.75 (1.49×)   |
 
 ## What's not done
 
