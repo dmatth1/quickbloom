@@ -2,9 +2,11 @@
 
 Measured on Intel Xeon @ 2.8 GHz (Cascade Lake-class, 33 MiB L3,
 virtualised). Build: `g++ -O3 -mavx2 -mbmi2 -mfma`. Median of 5
-repeats. **Diff-test: 0 mismatches across 167M probes** — the AVX2
-path produces bit-identical results to the scalar Arrow C++ /
-arrow-rs / Velox reference.
+repeats. All numbers are post-hash probe latency: XXH64 is computed
+once at setup and excluded from the timed loop. **Diff-test: 0
+mismatches across 167M probes** — the AVX2 path produces
+bit-identical results to the scalar Arrow C++ / arrow-rs / Velox
+reference.
 
 ## Headline numbers (ns/probe)
 

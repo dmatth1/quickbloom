@@ -4,8 +4,8 @@ arrow-go shipped AVX2/SSE4/NEON Parquet SBBF probes in 18.3.0
 ([PR #336](https://github.com/apache/arrow-go/pull/336)). Apache
 Impala and Kudu shipped AVX2 SBBF probes years before that. The
 other three big native readers — arrow-cpp, arrow-rs, and Velox —
-still ship the scalar pseudocode reference, line-for-line identical
-across all three.
+still ship the scalar reference: arrow-cpp and Velox line-for-line,
+arrow-rs the same algorithm in Rust.
 
 The on-disk format is locked by the Parquet spec; the probe
 *implementation* is not. An AVX2 drop-in is bit-identical to the
@@ -67,7 +67,7 @@ equivalence proof.
 **Downstream**: Polars (parquet2 path), DataFusion, every Rust
 analytics tool reading Parquet.
 
-### Velox — Trino / Presto / Spark-native
+### Velox — Trino / Presto / JVM Spark via Gluten
 
 [`facebookincubator/velox/velox/dwio/parquet/common/BloomFilter.cpp:196`][velox]:
 
@@ -172,7 +172,7 @@ ecosystem:
 |---------------------------------------------------------------------|---------------------------------------------------------------------|
 | `apache/arrow` cpp/src/parquet/bloom_filter.cc                      | DuckDB, ClickHouse, pyarrow, pandas, StarRocks, Doris, Apache Drill |
 | `apache/arrow-rs` parquet/src/bloom_filter/mod.rs                   | Polars, DataFusion, every Rust analytics tool                       |
-| `facebookincubator/velox` velox/dwio/parquet/common/BloomFilter.cpp | Trino / Presto via Prestissimo, Spark-native runtimes               |
+| `facebookincubator/velox` velox/dwio/parquet/common/BloomFilter.cpp | Trino / Presto via Prestissimo, JVM Spark via Gluten                |
 
 Parquet bloom is a *layer* underneath multiple table formats
 (Iceberg, Delta, Hudi) and multiple engines — one PR multiplies into
@@ -218,7 +218,8 @@ probe paths side-by-side:
    out-of-L3 wins.
 
 Headline numbers from `parquet_port/RESULTS.md` (Intel Xeon @ 2.8 GHz,
-33 MiB L3, virtualised):
+33 MiB L3, virtualised; post-hash probe latency, XXH64 computed once
+at setup and excluded from the timed loop):
 
 | Regime             | Footprint | scalar (Arrow/Velox) |   AVX2 single-key   |   AVX2 4-way bulk   |
 |--------------------|----------:|---------------------:|--------------------:|--------------------:|
