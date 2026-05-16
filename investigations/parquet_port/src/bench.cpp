@@ -1,5 +1,5 @@
 // Bench: Apache Arrow C++ / arrow-rs / Velox scalar Parquet bloom probe
-// vs AVX2 probe on the SAME Parquet-spec layout.
+// vs xsimd-based SIMD probe on the SAME Parquet-spec layout.
 //
 // Workload: simulates a SELECT * WHERE col = 'X' or IN (...) scan over an
 // N-row-group Parquet table. For each query value:
@@ -65,13 +65,13 @@ static Setup build(int n_filters, size_t filter_bytes,
 }
 
 // Diff-test: every (query, filter) pair must produce the same answer
-// from the scalar and AVX2 paths. Catches any layout/mask bug.
+// from the scalar and SIMD paths. Catches any layout/mask bug.
 static void diff_test(const Setup& s) {
     size_t total = 0, mismatches = 0;
     for (uint64_t h : s.query_hashes) {
         for (auto& f : s.filters) {
             bool a = f.find_scalar(h);
-            bool b = f.find_avx2(h);
+            bool b = f.find_simd(h);
             if (a != b) mismatches++;
             total++;
         }
@@ -83,10 +83,10 @@ static void diff_test(const Setup& s) {
     fprintf(stdout, "  diff-test: %zu probes, 0 mismatches.\n", total);
 }
 
-struct Result { double scalar_ns, avx2_ns, avx2x4_ns; };
+struct Result { double scalar_ns, simd_ns, simdx4_ns; };
 
 static Result bench_one(const Setup& s, int repeats = 5) {
-    std::vector<double> scalar_ns, avx2_ns, avx2x4_ns;
+    std::vector<double> scalar_ns, simd_ns, simdx4_ns;
     int nf = int(s.filters.size());
     for (int rep = 0; rep < repeats + 1; rep++) {
         auto t = clk::now();
@@ -99,7 +99,7 @@ static Result bench_one(const Setup& s, int repeats = 5) {
         t = clk::now();
         volatile size_t hits2 = 0;
         for (uint64_t h : s.query_hashes) {
-            for (auto& f : s.filters) hits2 += f.find_avx2(h);
+            for (auto& f : s.filters) hits2 += f.find_simd(h);
         }
         double a_ns = ns_since(t);
 
@@ -109,27 +109,27 @@ static Result bench_one(const Setup& s, int repeats = 5) {
         for (uint64_t h : s.query_hashes) {
             int i = 0;
             for (; i + 4 <= nf; i += 4) {
-                hits3 += parquet_bloom::filter::find_avx2_x4(
+                hits3 += parquet_bloom::filter::find_simd_x4(
                     &s.filters[i], &s.filters[i+1],
                     &s.filters[i+2], &s.filters[i+3], h);
             }
-            for (; i < nf; i++) hits3 += s.filters[i].find_avx2(h);
+            for (; i < nf; i++) hits3 += s.filters[i].find_simd(h);
         }
         double x4_ns = ns_since(t);
 
         (void)hits1; (void)hits2; (void)hits3;
         if (rep > 0) {
             scalar_ns.push_back(s_ns);
-            avx2_ns.push_back(a_ns);
-            avx2x4_ns.push_back(x4_ns);
+            simd_ns.push_back(a_ns);
+            simdx4_ns.push_back(x4_ns);
         }
     }
     std::sort(scalar_ns.begin(), scalar_ns.end());
-    std::sort(avx2_ns.begin(),   avx2_ns.end());
-    std::sort(avx2x4_ns.begin(), avx2x4_ns.end());
+    std::sort(simd_ns.begin(),   simd_ns.end());
+    std::sort(simdx4_ns.begin(), simdx4_ns.end());
     return { scalar_ns[scalar_ns.size()/2],
-             avx2_ns[avx2_ns.size()/2],
-             avx2x4_ns[avx2x4_ns.size()/2] };
+             simd_ns[simd_ns.size()/2],
+             simdx4_ns[simdx4_ns.size()/2] };
 }
 
 static void run_regime(const char* label, int n_filters, size_t filter_bytes,
@@ -146,19 +146,19 @@ static void run_regime(const char* label, int n_filters, size_t filter_bytes,
 
     size_t total_probes = s.query_hashes.size() * size_t(n_filters);
     double scalar_per = r.scalar_ns / double(total_probes);
-    double avx2_per   = r.avx2_ns   / double(total_probes);
-    double x4_per     = r.avx2x4_ns / double(total_probes);
+    double simd_per   = r.simd_ns   / double(total_probes);
+    double x4_per     = r.simdx4_ns / double(total_probes);
     printf("  scalar (arrow-cpp/arrow-rs/velox shape):       %.2f ns/probe\n", scalar_per);
-    printf("  AVX2 single-key (drop-in, same layout):        %.2f ns/probe\n", avx2_per);
-    printf("  AVX2 4-way unroll across row groups:           %.2f ns/probe\n", x4_per);
+    printf("  xsimd single-key (drop-in, same layout):       %.2f ns/probe\n", simd_per);
+    printf("  xsimd 4-way unroll across row groups:          %.2f ns/probe\n", x4_per);
     printf("  -> %.2fx single-key, %.2fx with 4-way across row groups\n",
-           scalar_per / avx2_per, scalar_per / x4_per);
+           scalar_per / simd_per, scalar_per / x4_per);
 
     printf("  per simulated `WHERE col = 'X'` query (= %d row group probes):\n",
            n_filters);
-    printf("    scalar: %.2f us  /  AVX2: %.2f us  /  AVX2-x4: %.2f us  /  savings (best): %.2f us\n",
+    printf("    scalar: %.2f us  /  xsimd: %.2f us  /  xsimd-x4: %.2f us  /  savings (best): %.2f us\n",
            scalar_per * n_filters / 1000.0,
-           avx2_per   * n_filters / 1000.0,
+           simd_per   * n_filters / 1000.0,
            x4_per     * n_filters / 1000.0,
            (scalar_per - x4_per) * n_filters / 1000.0);
 }
@@ -166,7 +166,7 @@ static void run_regime(const char* label, int n_filters, size_t filter_bytes,
 int main() {
     setbuf(stdout, nullptr);
     printf("Parquet bloom port: scalar (arrow-cpp / arrow-rs / velox shape)\n");
-    printf("                  vs AVX2 drop-in on the same Parquet-spec layout\n");
+    printf("                  vs xsimd drop-in on the same Parquet-spec layout\n");
 
     if (!xxh::self_test()) {
         fprintf(stderr, "XXH64 self-test FAILED -- aborting.\n");

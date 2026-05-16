@@ -42,15 +42,16 @@ public:
     //     arrow-cpp, arrow-rs, and Velox.
     bool find_scalar(uint64_t hash) const;
 
-    // (2) AVX2 drop-in on the same Parquet-spec layout. Bit-identical
-    //     results, ~3-5x faster on this hardware.
-    bool find_avx2(uint64_t hash) const;
+    // (2) xsimd drop-in on the same Parquet-spec layout. Bit-identical
+    //     results. Uses xsimd::batch<uint32_t> (8 lanes on AVX2 / AVX-512;
+    //     two 4-lane batches on NEON; selected per build target).
+    bool find_simd(uint64_t hash) const;
 
-    // (3) AVX2 + 4-way unroll across row-group filters: probe 4 filters
-    //     in parallel against the SAME query hash. Lets the OoO core
-    //     have 4 cache misses in flight simultaneously when filters are
-    //     out of L3. Returns count of positives (0..4).
-    static int find_avx2_x4(const filter* f0, const filter* f1,
+    // (3) xsimd + 4-way unroll across row-group filters: probe 4 filters
+    //     in parallel against the SAME query hash. Lets the OoO core have
+    //     4 cache misses in flight simultaneously when filters are out of
+    //     L3. Returns count of positives (0..4).
+    static int find_simd_x4(const filter* f0, const filter* f1,
                             const filter* f2, const filter* f3,
                             uint64_t hash);
 
@@ -58,7 +59,7 @@ public:
     size_t num_blocks() const { return data_.size() / kBytesPerFilterBlock; }
 
 private:
-    // Stored as raw bytes so the scalar and AVX2 paths see the same
+    // Stored as raw bytes so the scalar and SIMD paths see the same
     // memory layout the on-disk Parquet bloom does.
     std::vector<uint8_t> data_;
 };
