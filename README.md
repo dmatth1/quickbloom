@@ -13,8 +13,7 @@ The three quickbloom designs:
 | `bloom_batched.c`    | quickbloom: **batched**    | Out-of-cache filters (≥ ~10 MB) or columnar workloads. Exposes an 8-way batched ABI. |
 
 `single_key` and `unified` share one source (`bloom_sbbf.c`) and select a
-compile-time `PREFETCH_LOOKAHEAD` macro — two configurations, one
-implementation. `bloom_batched.c` adds optional `bloom_*_batch8` entry
+compile-time `PREFETCH_LOOKAHEAD` macro. `bloom_batched.c` adds optional `bloom_*_batch8` entry
 points; the other two expose the single-key + prehash ABI only.
 
 Reference implementations of other designs (Apache Parquet/Impala SBBF,
