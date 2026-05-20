@@ -148,28 +148,42 @@ AVX-512 anyway.
 Sample capture on Intel Xeon @ 2.1 GHz (Sapphire Rapids-class, 260 MB
 L3), clang -O3, contains-miss hash+bloom path, min ns/op:
 
-| Implementation                   | K | S (128 KB) | M (2 MB) | L (32 MB) | FP rate |
-|----------------------------------|---|-----------:|---------:|----------:|--------:|
-| **quickbloom: single_key**       | 8 |   **1.64** | **2.42** |      7.16 | 0.00030 |
-| quickbloom: unified              | 8 |       1.98 |     2.70 |      7.58 | 0.00030 |
-| quickbloom: batched †            | 4 |       2.84 |     3.34 |      7.00 | 0.00239 |
-| `krassovsky` †                   | 5 |       1.84 |     2.93 |  **6.51** | 0.00340 |
-| `xorfuse` (binary fuse) ‡        | 3 |       4.24 |     4.76 |     19.52 | 0.00422 |
-| `classic`                        | 8 |      10.15 |    13.13 |     19.38 | 0.00013 |
-| `impala`                         | 8 |      16.49 |    20.11 |     26.27 | 0.00030 |
-| `arrow_rs` SBBF (Rust)           | 8 |      19.66 |    24.15 |     31.87 | 0.00030 |
-| `fastbloom` (Rust)               | 8 |      25.07 |    35.12 |     56.69 | 0.00012 |
+| Implementation                   | K | API shape           | S (128 KB) | M (2 MB) | L (32 MB) | FP rate |
+|----------------------------------|---|---------------------|-----------:|---------:|----------:|--------:|
+| **quickbloom: single_key**       | 8 | single-key          |   **1.64** | **2.42** |      7.16 | 0.00030 |
+| quickbloom: unified              | 8 | single-key          |       1.98 |     2.70 |      7.58 | 0.00030 |
+| quickbloom: batched              | 4 | single-key + batch8 |       2.84 |     3.34 |      7.00 | 0.00239 |
+| `krassovsky`                     | 5 | **batched-only**    |       1.84 |     2.93 |  **6.51** | 0.00340 |
+| `xorfuse` (binary fuse)          | 3 | **static set**      |       4.24 |     4.76 |     19.52 | 0.00422 |
+| `classic`                        | 8 | single-key          |      10.15 |    13.13 |     19.38 | 0.00013 |
+| `impala`                         | 8 | single-key          |      16.49 |    20.11 |     26.27 | 0.00030 |
+| `arrow_rs` SBBF (Rust)           | 8 | single-key          |      19.66 |    24.15 |     31.87 | 0.00030 |
+| `fastbloom` (Rust)               | 8 | single-key          |      25.07 |    35.12 |     56.69 | 0.00012 |
 
-† **8-way batched.** The bench routes through the batch8 API (AVX2
-SIMD across 8 keys per call). Per-key APIs exist for `quickbloom:
-batched`; `krassovsky`'s `PatternedSimd` is essentially batched-only
-— its `vpgatherqq` load handles 4 blocks per instruction and there is
-no equally-optimised single-key path.
+The **API shape** column matters as much as the latency:
 
-‡ **Static filter.** Must be built from a known key set up-front;
-the `bloom_*` ABI shim defers the build to first contains. Build
-cost is ~25–210 ns/key (vs ~2–7 ns/key for SBBF). Right answer for
-read-only filters, wrong answer for streaming.
+- **single-key**: insert and contains operate on one key at a time.
+  Workloads with arbitrary call patterns (caches, streaming dedup,
+  point lookups) only need this shape; everything in this column
+  comes for free.
+- **single-key + batch8**: exposes a single-key API (same shape as
+  `single_key` / `unified`) *and* an 8-way batched API for callers
+  that can batch. Either shape works; `bloom_*_bulk` routes through
+  the batched path automatically.
+- **batched-only** (`krassovsky`): `PatternedSimd` is fundamentally
+  batched — every contains issues a `vpgatherqq` that loads 4 blocks
+  per instruction and feeds the results back through a single
+  popcount. There is no comparably-tuned single-key code path; if
+  your caller can't deliver keys in groups of 8, this is not really
+  applicable to your workload. **The numbers above measure
+  `krassovsky` in its native batched mode** — the bench routes
+  through `bloom_*_batch8_bulk` internally. Per-key latency in a
+  random-access workload would be much worse.
+- **static set** (`xorfuse`): must be built from the full key set
+  up-front. The `bloom_*` ABI shim defers the populate to first
+  contains; the build is ~25–210 ns/key (vs ~2–7 ns/key for SBBF).
+  Right answer for read-only filters (Tempo block-pruning, Parquet
+  bloom payloads built at write time); wrong answer for streaming.
 
 Reproduce: `CC=clang python3 bench_all.py --sizes S,M,L --comparisons`.
 Prehash-mode numbers (algorithm only) are 20–40% lower across the
@@ -180,11 +194,12 @@ pull further ahead.
 
 ### What each row tells you
 
-- **`krassovsky`** (Save Buffer `PatternedSimd`) is the closest
-  competitor — within 10–20% across regimes and slightly *ahead* of
-  `single_key` at L (its `vpgatherqq` 4-block load pays off on
-  Sapphire Rapids). FP rate is ~10× higher (K=5); at equal-FP it
-  falls behind.
+- **`krassovsky`** is the closest competitor *for callers that can
+  batch* — within 10–20% across regimes and slightly *ahead* of
+  `single_key` at L (where `vpgatherqq` pays off on Sapphire
+  Rapids). For single-key workloads it's not in the race at all
+  because there isn't an optimised single-key path. FP rate is
+  ~10× higher (K=5); at equal-FP it falls behind.
 - **`xorfuse`** uses ~9 bits/key (vs SBBF's ~21) but probes 3 cache
   lines per contains (vs SBBF's 1), so it loses on query latency
   even though it wins on memory.
