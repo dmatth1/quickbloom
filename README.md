@@ -145,91 +145,63 @@ AVX-512 anyway.
 > `python3 bench_all.py`) on your target hardware to see what's true
 > for your CPU.
 
-Captured on Intel Xeon @ 2.1 GHz (Sapphire Rapids-class, 260 MB L3),
-clang -O3, contains-miss hash+bloom path, ns/op min:
+Sample capture on Intel Xeon @ 2.1 GHz (Sapphire Rapids-class, 260 MB
+L3), clang -O3, contains-miss hash+bloom path, min ns/op:
 
-**quickbloom across the cache hierarchy:**
+| Implementation                   | K | S (128 KB) | M (2 MB) | L (32 MB) | FP rate |
+|----------------------------------|---|-----------:|---------:|----------:|--------:|
+| **quickbloom: single_key**       | 8 |   **1.64** | **2.42** |      7.16 | 0.00030 |
+| quickbloom: unified              | 8 |       1.98 |     2.70 |      7.58 | 0.00030 |
+| quickbloom: batched †            | 4 |       2.84 |     3.34 |      7.00 | 0.00239 |
+| `krassovsky` †                   | 5 |       1.84 |     2.93 |  **6.51** | 0.00340 |
+| `xorfuse` (binary fuse) ‡        | 3 |       4.24 |     4.76 |     19.52 | 0.00422 |
+| `classic`                        | 8 |      10.15 |    13.13 |     19.38 | 0.00013 |
+| `impala`                         | 8 |      16.49 |    20.11 |     26.27 | 0.00030 |
+| `arrow_rs` SBBF (Rust)           | 8 |      19.66 |    24.15 |     31.87 | 0.00030 |
+| `fastbloom` (Rust)               | 8 |      25.07 |    35.12 |     56.69 | 0.00012 |
 
-| Filter size              | quickbloom: single_key | quickbloom: unified | quickbloom: batched |
-|--------------------------|-----------------------:|--------------------:|--------------------:|
-| S  (128 KB, in L2)       |               **1.52** |                1.96 |                2.81 |
-| M  (2 MB,   in L3)       |               **2.25** |                2.69 |                3.28 |
-| L  (32 MB,  in L3 here)  |               **6.62** |                7.17 |                7.90 |
+† **8-way batched.** The bench routes through the batch8 API (AVX2
+SIMD across 8 keys per call). Per-key APIs exist for `quickbloom:
+batched`; `krassovsky`'s `PatternedSimd` is essentially batched-only
+— its `vpgatherqq` load handles 4 blocks per instruction and there is
+no equally-optimised single-key path.
 
-On a smaller-L3 host (~33 MB), L falls past L3 and `batched` /
-`unified` pull ahead at that regime — that's the regime they were
-designed for. Prehash-mode numbers (algorithm only) are 20–40% lower
-across the board; see `bench_all.py` output.
-
-**Head-to-head vs reference designs** (same metric):
-
-| Implementation             | K | S (128 KB) | M (2 MB) | L (32 MB) | FP rate |
-|----------------------------|---|-----------:|---------:|----------:|--------:|
-| **quickbloom: single_key** | 8 |   **1.64** | **2.42** |      7.16 | 0.00030 |
-| quickbloom: unified        | 8 |       1.98 |     2.70 |      7.58 | 0.00030 |
-| quickbloom: batched        | 4 |       2.84 |     3.34 |      7.00 | 0.00239 |
-| `krassovsky`               | 5 |       1.84 |     2.93 |   **6.51**| 0.00340 |
-| `xorfuse` (binary fuse)    | 3 |       4.24 |     4.76 |     19.52 | 0.00422 |
-| `classic`                  | 8 |      10.15 |    13.13 |     19.38 | 0.00013 |
-| `impala`                   | 8 |      16.49 |    20.11 |     26.27 | 0.00030 |
-| `arrow_rs` SBBF (Rust)     | 8 |      19.66 |    24.15 |     31.87 | 0.00030 |
-| `fastbloom` (Rust)         | 8 |      25.07 |    35.12 |     56.69 | 0.00012 |
+‡ **Static filter.** Must be built from a known key set up-front;
+the `bloom_*` ABI shim defers the build to first contains. Build
+cost is ~25–210 ns/key (vs ~2–7 ns/key for SBBF). Right answer for
+read-only filters, wrong answer for streaming.
 
 Reproduce: `CC=clang python3 bench_all.py --sizes S,M,L --comparisons`.
+Prehash-mode numbers (algorithm only) are 20–40% lower across the
+board; see `bench_all.py` output. L falls inside L3 on this 260 MB-L3
+host; on more typical 32 MB-L3 hosts the L row pushes into DRAM and
+the prefetch / batched designs (`unified`, `batched`, `krassovsky`)
+pull further ahead.
 
-- **`krassovsky`** (Save Buffer's `PatternedSimd`) is the closest
-  competitor — within 10–20% on this CPU and slightly *ahead* of
-  `single_key` at the L size (where its `vpgatherqq` lookup pays off
-  on Sapphire Rapids). FP rate is ~10× higher (K=5); at equal-FP it
+### What each row tells you
+
+- **`krassovsky`** (Save Buffer `PatternedSimd`) is the closest
+  competitor — within 10–20% across regimes and slightly *ahead* of
+  `single_key` at L (its `vpgatherqq` 4-block load pays off on
+  Sapphire Rapids). FP rate is ~10× higher (K=5); at equal-FP it
   falls behind.
-- **`xorfuse`** (Graf+Lemire binary fuse filter) is a different class:
-  static set, ~9 bits/key (vs SBBF's ~21), but probes 3 cache lines
-  per contains (vs SBBF's 1) so it loses on query latency. Build cost
-  is also ~10–30× higher (~25–210 ns/key vs ~2–7 ns/key for SBBF).
-  Right answer for read-only filters; wrong answer for streaming.
-- **`classic`** (textbook K-hash Bloom) loses ~3–7× because K=8 scattered
-  probes pay K cache-line tag-checks per query; SBBF pays 1.
-- **`impala`** (Apache Parquet reference SBBF, scalar) loses ~10× in
-  hash+bloom and ~7× in prehash. Half the penalty is XXH64 vs `wymum`,
+- **`xorfuse`** uses ~9 bits/key (vs SBBF's ~21) but probes 3 cache
+  lines per contains (vs SBBF's 1), so it loses on query latency
+  even though it wins on memory.
+- **`classic`** loses ~3–7× because K=8 scattered probes pay K
+  cache-line tag-checks per query; SBBF pays 1.
+- **`impala`** (Parquet reference SBBF, scalar C + XXH64) loses ~10×
+  hash+bloom and ~7× prehash. Half the penalty is XXH64 vs `wymum`,
   half is scalar bit-set vs SIMD `vptest`.
-- **`arrow_rs`** (apache/arrow-rs `parquet::bloom_filter::Sbbf`,
-  Rust). The production SBBF every Rust Parquet reader uses. Same
-  XXH64 + scalar SBBF as `impala` but ~25% faster than that
-  reference — Rust's bounds-check elision and inliner help. Still
-  ~10–12× slower than `single_key`. No prehash API exposed.
-- **`fastbloom`** (tomtomwombat/fastbloom, Rust). Markets itself as
-  "the fastest Bloom filter in Rust" — and may well be vs other Rust
-  options, but loses ~15× to `single_key` here. Two reasons: it uses
-  SipHash-1-3 (cryptographic-strength hash, ~5× slower than `wymum`
-  on 16-byte keys), and its block layout probes more memory per
-  query than a 256-bit-block SBBF. The crate's claim is about
+- **`arrow_rs`** SBBF is the production-grade SBBF every Rust Parquet
+  reader uses. Same algorithm as `impala` and ~25% faster than that
+  C reference (Rust inliner wins on a hot path with no SIMD). Still
+  ~10–12× behind `single_key`. No prehash API.
+- **`fastbloom`** markets as "the fastest Bloom in Rust" — true vs
+  other Rust crates, but ~15× slower than `single_key` here. It uses
+  SipHash-1-3 (much slower than `wymum` on 16-byte keys) and its
+  block layout touches more memory per query. The crate's claim is
   Rust-vs-Rust, not Rust-vs-hand-tuned-C.
-
-**Head-to-head vs other designs**, at S (128 KB, in L2), contains-miss,
-ns/op min (cyc/op at 2.8 GHz):
-
-| Implementation             | K | hash+bloom | prehash | cyc/op | FP rate |
-|----------------------------|---|-----------:|--------:|-------:|--------:|
-| **quickbloom: single_key** | 8 |   **1.99** |**1.44** |**4.0** | 0.00034 |
-| **quickbloom: unified**    | 8 |       2.56 |    1.74 |    4.9 | 0.00034 |
-| **quickbloom: batched**    | 4 |       2.72 |    2.09 |    5.9 | 0.00257 |
-| `krassovsky`               | 5 |       5.63 |    4.96 |   13.9 | 0.00346 |
-| `classic`                  | 8 |       9.40 |    8.49 |   23.8 | 0.00016 |
-| `impala`                   | 8 |      17.56 |    8.51 |   23.8 | 0.00034 |
-
-Reproduce: `CC=clang python3 bench_all.py --sizes S --comparisons`.
-
-- **Impala's 9× hash+bloom gap shrinks to 2× in prehash mode** —
-  half the penalty is XXH64 vs wymum, half is scalar bit-set vs SIMD
-  mask compute.
-- **Krassovsky's `vpgatherqq` is CPU-sensitive.** ~3× vs scalar loads
-  on Cascade Lake, ~16% on Sapphire Rapids. `single_key` wins on both.
-- **FP rates differ.** K=4/5 rows report ~10× higher FP than K=8 at
-  equal bits/key. Pass `--target-fp X` to normalize; ordering doesn't
-  change on this CPU.
-
-Not ported: fastbloom (Rust crate `tomtomwombat/fastbloom`, published
-~3–5 ns/op on its own hardware).
 
 ## Variants we tried and rejected
 
