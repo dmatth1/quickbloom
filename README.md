@@ -145,20 +145,60 @@ AVX-512 anyway.
 > `python3 bench_all.py`) on your target hardware to see what's true
 > for your CPU.
 
-Sample capture on Intel Xeon @ 2.1 GHz (Sapphire Rapids-class, 260 MB
-L3), clang -O3, contains-miss hash+bloom path, ns/op min over 3 runs:
+Captured on Intel Xeon @ 2.1 GHz (Sapphire Rapids-class, 260 MB L3),
+clang -O3, contains-miss hash+bloom path, ns/op min:
+
+**quickbloom across the cache hierarchy:**
 
 | Filter size              | quickbloom: single_key | quickbloom: unified | quickbloom: batched |
 |--------------------------|-----------------------:|--------------------:|--------------------:|
-| S  (128 KB, in L2)       |               **1.58** |                2.19 |                2.84 |
-| M  (2 MB,   in L3)       |               **2.49** |                2.76 |                3.31 |
-| L  (32 MB,  in L3 here)  |               **6.68** |                7.47 |                7.49 |
+| S  (128 KB, in L2)       |               **1.52** |                1.96 |                2.81 |
+| M  (2 MB,   in L3)       |               **2.25** |                2.69 |                3.28 |
+| L  (32 MB,  in L3 here)  |               **6.62** |                7.17 |                7.90 |
 
 On a smaller-L3 host (~33 MB), L falls past L3 and `batched` /
 `unified` pull ahead at that regime — that's the regime they were
-designed for. Prehash-mode numbers (algorithm only, comparable to
-published cyc/op) are 20–40% lower across the board; see
-`bench_all.py` output.
+designed for. Prehash-mode numbers (algorithm only) are 20–40% lower
+across the board; see `bench_all.py` output.
+
+**Head-to-head vs reference designs** (same metric):
+
+| Implementation             | K | S (128 KB) | M (2 MB) | L (32 MB) | FP rate |
+|----------------------------|---|-----------:|---------:|----------:|--------:|
+| **quickbloom: single_key** | 8 |   **1.52** | **2.21** |  **6.79** | 0.00030 |
+| quickbloom: unified        | 8 |       1.96 |     2.64 |      7.44 | 0.00030 |
+| quickbloom: batched        | 4 |       2.81 |     3.21 |      7.15 | 0.00239 |
+| `krassovsky`               | 5 |       1.83 |     2.74 |      6.94 | 0.00340 |
+| `xorfuse` (binary fuse)    | 3 |       4.19 |     4.77 |     19.54 | 0.00422 |
+| `classic`                  | 8 |      10.20 |    13.60 |     19.53 | 0.00013 |
+| `impala`                   | 8 |      16.61 |    20.20 |     26.03 | 0.00030 |
+
+Reproduce: `CC=clang python3 bench_all.py --sizes S,M,L --comparisons`.
+
+- **`krassovsky`** (Save Buffer's `PatternedSimd`) is the only reference
+  that's genuinely competitive — within 10–20% on the algorithm-pure
+  comparison. Same `wymum` hash, similar SIMD shape. FP rate is ~10×
+  higher though (K=5); at equal-FP it falls behind.
+- **`xorfuse`** (Graf+Lemire binary fuse filter) is a different class:
+  static set, ~9 bits/key (vs SBBF's ~21), but probes 3 cache lines
+  per contains (vs SBBF's 1) so it loses on query latency. Build cost
+  is also ~10–30× higher (~25–210 ns/key vs ~2–7 ns/key for SBBF).
+  Right answer for read-only filters; wrong answer for streaming.
+- **`classic`** (textbook K-hash Bloom) loses ~3-7× because K=8 scattered
+  probes pay K cache-line tag-checks per query; SBBF pays 1.
+- **`impala`** (Apache Parquet reference SBBF, scalar) loses ~10× in
+  hash+bloom and ~7× in prehash. Half the penalty is XXH64 vs `wymum`,
+  half is scalar bit-set vs SIMD `vptest`.
+
+**Strong competitors not yet in the bench** — `fastbloom` (Rust;
+SipHash-1-3 + concurrency support) and `arrow-rs`'s production SBBF
+(Rust; the canonical Parquet reader/writer) live in the Rust
+ecosystem and would each need a small `extern "C"` wrapper crate to
+hook into this C harness. Tracked as deferred in
+[`comparisons/README.md`](comparisons/README.md). The popular Rust
+`xor`/binary-fuse implementations share an algorithm with our
+in-tree `xorfuse`; numbers should be in the same ballpark on
+equivalent hardware.
 
 **Head-to-head vs other designs**, at S (128 KB, in L2), contains-miss,
 ns/op min (cyc/op at 2.8 GHz):

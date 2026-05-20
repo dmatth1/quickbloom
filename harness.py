@@ -45,6 +45,10 @@ CFLAGS = [
     # AES-NI is universal on modern x86_64 -- adding it costs no portability.
     "-mavx2", "-mbmi2", "-mfma", "-maes",
     "-fPIC", "-shared",
+    # libm — needed by comparisons/bloom_xorfuse.c (binary fuse filter
+    # uses log/round in size calculation). No-op for candidates that
+    # don't call libm functions.
+    "-lm",
 ]
 
 # Filter-size presets. Each spans a different cache regime on a typical

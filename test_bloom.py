@@ -22,6 +22,7 @@ CANDIDATES = [
     "comparisons/bloom_impala.c",
     "comparisons/bloom_krassovsky.c",
     "comparisons/bloom_classic.c",
+    "comparisons/bloom_xorfuse.c",
 ]
 
 SIZE_LIMITS = [

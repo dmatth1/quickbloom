@@ -46,6 +46,8 @@ COMPARISON_CANDIDATES = [
      "krassovsky  -- Save Buffer PatternedSimd, 64-bit + gather"),
     ("comparisons/bloom_classic.c",
      "classic     -- textbook K-hash bloom (baseline)"),
+    ("comparisons/bloom_xorfuse.c",
+     "xorfuse     -- Graf+Lemire binary fuse filter (static; bloom-ABI shim)"),
 ]
 
 
