@@ -146,34 +146,51 @@ AVX-512 anyway.
 > for your CPU.
 
 Sample capture on Intel Xeon @ 2.1 GHz (Sapphire Rapids-class, 260 MB
-L3), clang -O3, contains-miss hash+bloom path, min ns/op:
+L3), clang -O3, contains-miss, min ns/op.
 
-| Implementation                   | K | API shape           | S (128 KB) | M (2 MB) | L (32 MB) | FP rate |
-|----------------------------------|---|---------------------|-----------:|---------:|----------:|--------:|
-| **quickbloom: single_key**       | 8 | single-key          |   **1.64** | **2.42** |      7.16 | 0.00030 |
-| quickbloom: unified              | 8 | single-key          |       1.98 |     2.70 |      7.58 | 0.00030 |
-| quickbloom: batched              | 4 | single-key + batch8 |       2.84 |     3.34 |      7.00 | 0.00239 |
-| `krassovsky`                     | 5 | **batched-only**    |       1.84 |     2.93 |  **6.51** | 0.00340 |
-| `xorfuse` (binary fuse)          | 3 | **static set**      |       4.24 |     4.76 |     19.52 | 0.00422 |
-| `classic`                        | 8 | single-key          |      10.15 |    13.13 |     19.38 | 0.00013 |
-| `impala`                         | 8 | single-key          |      16.49 |    20.11 |     26.27 | 0.00030 |
-| `arrow_rs` SBBF (Rust)           | 8 | single-key          |      19.66 |    24.15 |     31.87 | 0.00030 |
-| `fastbloom` (Rust)               | 8 | single-key          |      25.07 |    35.12 |     56.69 | 0.00012 |
+### quickbloom — full `Test([]byte)` path
+
+What a user actually pays end-to-end (`wymum` hash + SBBF probe):
+
+| Variant         | K | API shape           | S (128 KB) | M (2 MB) | L (32 MB) |
+|-----------------|---|---------------------|-----------:|---------:|----------:|
+| **single_key**  | 8 | single-key          |   **1.64** | **2.42** |      7.16 |
+| unified         | 8 | single-key          |       1.98 |     2.70 |      7.58 |
+| batched         | 4 | single-key + batch8 |       2.84 |     3.34 |  **7.00** |
+
+### Head-to-head, algorithm-only (prehash)
+
+Apples-to-apples: hashing factored out on both sides, so only probe
+geometry and cache behavior remain. This is the fair algorithm
+comparison; for end-to-end numbers add the candidate's hash cost
+(`wymum` ~3 ns / XXH64 ~6 ns / SipHash-1-3 ~15 ns on 16-byte keys).
+
+| Implementation             | K | API shape           | S (128 KB) | M (2 MB) | L (32 MB) | FP rate |
+|----------------------------|---|---------------------|-----------:|---------:|----------:|--------:|
+| **quickbloom: single_key** | 8 | single-key          |   **1.17** |     1.71 |  **5.79** | 0.00030 |
+| quickbloom: unified        | 8 | single-key          |       1.26 | **1.67** |      5.84 | 0.00030 |
+| quickbloom: batched        | 4 | single-key + batch8 |       2.06 |     2.09 |      6.39 | 0.00239 |
+| `krassovsky`               | 5 | **batched-only**    |       1.44 |     2.19 |      7.08 | 0.00340 |
+| `xorfuse` (binary fuse)    | 3 | **static set**      |       3.41 |     3.58 |     14.68 | 0.00422 |
+| `impala`                   | 8 | single-key          |       8.50 |    10.51 |     13.88 | 0.00030 |
+| `classic`                  | 8 | single-key          |       8.81 |    11.61 |     17.71 | 0.00013 |
+| `fastbloom` (Rust)         | 8 | single-key          |      10.77 |    13.85 |     21.73 | 0.00012 |
+| `arrow_rs` SBBF (Rust) †   | 8 | single-key          |        n/a |      n/a |       n/a | 0.00030 |
+
+† `arrow_rs`'s parquet crate doesn't expose `insert_hash` / `check_hash`;
+only the bytes-in path with internal XXH64. Its hash+bloom numbers
+are 19.66 / 24.15 / 31.87 ns at S/M/L.
 
 - **API shape**: `single-key` is unconstrained; `batched-only`
   (`krassovsky`) requires keys in groups of 8 and isn't applicable
   to per-key callers; `static set` (`xorfuse`) needs the full key
   set up-front (~25–210 ns/key build vs ~2–7 ns/key for SBBF).
-- **Why everyone loses to `single_key`**: a slower hash than
-  `wymum` (XXH64 in `impala` / `arrow_rs`, SipHash-1-3 in
-  `fastbloom`) and/or K scattered cache-line probes instead of
-  SBBF's one. `krassovsky` is the only algorithmic peer (same
-  `wymum`, similar SIMD shape) — slightly ahead at L on
-  `vpgatherqq` — but only for batched callers.
+- **Why SBBF wins on probe alone**: one cache line per query vs K
+  scattered probes for `classic`/`impala`/`fastbloom`. `krassovsky`
+  is the only algorithmic peer (within 25–40%) — when batched.
 - **Reproduce**: `CC=clang python3 bench_all.py --sizes S,M,L
-  --comparisons`. Prehash-mode numbers are 20–40% lower; L fits in
-  L3 on this 260 MB-L3 host (smaller-L3 hosts push L into DRAM and
-  the prefetch / batched designs pull further ahead).
+  --comparisons`. The `miss` column is hash+bloom (table 1);
+  `pre.miss` is prehash (table 2).
 
 ## Variants we tried and rejected
 
