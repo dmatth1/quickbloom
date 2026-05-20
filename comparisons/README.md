@@ -26,6 +26,14 @@ python3 ../test_bloom.py
 | `bloom_krassovsky.c` | [save-buffer/bloomfilter_benchmarks](https://github.com/save-buffer/bloomfilter_benchmarks) (MIT) | PatternedSimd: 64-bit blocks, 1024-entry mask table (4–5 bits set, sliding window), AVX2 8-way batched, `vpgatherqq` contains |
 | `bloom_classic.c` | textbook | K=8 double-hashing (`h_i = h1 + i·h2`), non-blocked. Pre-SBBF baseline. |
 | `bloom_xorfuse.c` | [FastFilter/xor_singleheader](https://github.com/FastFilter/xor_singleheader) (Apache 2.0) | Graf+Lemire binary fuse filter (8-bit fingerprints, 3-hash xor). **Static**: must be built from a known key set; this file is a shim exposing the `bloom_*` ABI by buffering inserts and lazy-building on first contains. |
+| `fastbloom_shim/` | [tomtomwombat/fastbloom](https://github.com/tomtomwombat/fastbloom) (MIT/Apache-2.0) | **Rust cdylib**. K=8 multi-block Bloom, SipHash-1-3 hasher. Crate self-bills as "the fastest Bloom filter in Rust" — true vs other Rust options, but loses to wymum-based C SBBF in our bench. |
+| `arrow_rs_sbbf_shim/` | [apache/arrow-rs](https://github.com/apache/arrow-rs) `parquet::bloom_filter::Sbbf` (Apache 2.0) | **Rust cdylib**. Production SBBF used by every Rust Parquet reader/writer. K=8, XXH64, scalar bit-set (same algorithm as `bloom_impala.c`). No prehash API exposed by the crate. |
+
+The Rust shims live in subdirectories with their own `Cargo.toml`;
+the harness detects them by the `Cargo.toml` and builds with
+`cargo build --release`. If the Rust toolchain isn't installed those
+candidates are skipped with an error message; the C-only path keeps
+working.
 
 ## Measured head-to-head
 
@@ -38,13 +46,15 @@ L3), clang -O3, contains-miss, ns/op min:
 
 | Implementation                | K | S (128 KB) | M (2 MB) | L (32 MB) | FP rate |
 |-------------------------------|---|-----------:|---------:|----------:|--------:|
-| `single_key` (top-level)      | 8 |   **1.52** | **2.21** |  **6.79** | 0.00030 |
-| `unified` (top-level)         | 8 |       1.96 |     2.64 |      7.44 | 0.00030 |
-| `batched` (top-level)         | 4 |       2.81 |     3.21 |      7.15 | 0.00239 |
-| `bloom_krassovsky.c`          | 5 |       1.83 |     2.74 |      6.94 | 0.00340 |
-| `bloom_xorfuse.c`             | 3 |       4.19 |     4.77 |     19.54 | 0.00422 |
-| `bloom_classic.c`             | 8 |      10.20 |    13.60 |     19.53 | 0.00013 |
-| `bloom_impala.c`              | 8 |      16.61 |    20.20 |     26.03 | 0.00030 |
+| `single_key` (top-level)      | 8 |   **1.64** | **2.42** |      7.16 | 0.00030 |
+| `unified` (top-level)         | 8 |       1.98 |     2.70 |      7.58 | 0.00030 |
+| `batched` (top-level)         | 4 |       2.84 |     3.34 |      7.00 | 0.00239 |
+| `bloom_krassovsky.c`          | 5 |       1.84 |     2.93 |   **6.51**| 0.00340 |
+| `bloom_xorfuse.c`             | 3 |       4.24 |     4.76 |     19.52 | 0.00422 |
+| `bloom_classic.c`             | 8 |      10.15 |    13.13 |     19.38 | 0.00013 |
+| `bloom_impala.c`              | 8 |      16.49 |    20.11 |     26.27 | 0.00030 |
+| `arrow_rs_sbbf_shim/`         | 8 |      19.66 |    24.15 |     31.87 | 0.00030 |
+| `fastbloom_shim/`             | 8 |      25.07 |    35.12 |     56.69 | 0.00012 |
 
 Build cost (insert\_bulk, ns/key amortised over the populate phase)
 shows the static-vs-dynamic split — xorfuse's lazy-build dominates
@@ -52,8 +62,10 @@ insert\_bulk time:
 
 | Implementation                | S insert | M insert | L insert | notes |
 |-------------------------------|---------:|---------:|---------:|---|
-| `single_key`                  |     1.58 |     2.32 |     7.13 | dynamic bloom; insert ≈ contains |
-| `bloom_xorfuse.c`             |    24.47 |    31.60 |   209.93 | static xor peel; cache-thrashes on the scratch buffer at L |
+| `single_key`                  |     1.58 |     2.28 |     7.19 | dynamic bloom; insert ≈ contains |
+| `bloom_xorfuse.c`             |    24.88 |    31.86 |   205.76 | static xor peel; cache-thrashes on scratch buffer at L |
+| `fastbloom_shim/`             |    29.92 |    44.67 |    78.08 | SipHash-1-3 per key dominates |
+| `arrow_rs_sbbf_shim/`         |    12.60 |    17.02 |    26.87 | XXH64 per key dominates |
 
 ## Caveats
 
@@ -91,31 +103,33 @@ insert\_bulk time:
   (8-bit fingerprint); `binary_fuse16` would get ~0.002% at 2×
   bits/key.
 
-## Strong competitors not yet wired in
+## Bench takeaways for the Rust shims
 
-These are well-known alternatives the bench should grow to include,
-but each requires non-trivial new build infrastructure (Rust
-toolchain, FFI shims, etc.) that's bigger than dropping a `.c` file
-in. Listed here so they're tracked, not forgotten:
+* **fastbloom**'s tagline is "the fastest Bloom filter in Rust" and
+  the published benches back that up vs other Rust crates (it beats
+  `bloom`, `bloom2`, `growable-bloom-filter`, etc.). Against
+  hand-tuned C SBBF with `wymum` and a single-cache-line block, the
+  story flips: ~15× slower at S, ~14× at M, ~8× at L. Two reasons —
+  SipHash-1-3 is a strong hash (good for adversarial workloads) but
+  ~5× slower than `wymum` on 16-byte keys, and the crate's block
+  layout touches more memory per query than the 256-bit SBBF block.
+* **arrow-rs SBBF** is the production-grade SBBF used by every Rust
+  Parquet reader/writer. Same algorithm class as `bloom_impala.c`
+  (Parquet spec, XXH64, scalar bit-set) — and ~25% *faster* than
+  that reference, thanks to Rust's bounds-check elision and
+  inliner. Still ~10–12× slower than `single_key` because of XXH64
+  (vs `wymum`) and scalar bit-set (vs SIMD `vptest`).
+* **No prehash for `arrow_rs_sbbf_shim`.** The arrow-rs crate
+  doesn't expose an `insert_hash` / `check_hash` entry point — its
+  public API always hashes via XXH64 internally. Bench prehash rows
+  show "(no prehash)" for this candidate.
 
-* **fastbloom** ([tomtomwombat/fastbloom](https://github.com/tomtomwombat/fastbloom),
-  Rust). Cites ~3–5 ns/op on its own hardware. Default hasher is
-  SipHash-1-3 with full concurrency support. Wiring in requires a
-  `cargo build --release` of a tiny crate that exposes the
-  `bloom_*` C ABI via `#[no_mangle] extern "C"`, plus harness
-  changes to invoke cargo.
-* **arrow-rs SBBF** (`parquet::bloom_filter::Sbbf` in
-  [apache/arrow-rs](https://github.com/apache/arrow-rs), Rust). The
-  production-grade SBBF used by every Rust Parquet reader/writer.
-  Same wrapping work as fastbloom; differs in hash (XXH64) and in
-  some allocation/serialization details.
-* **CRoaring's bloom?** As of the latest [CRoaring](https://github.com/RoaringBitmap/CRoaring)
-  source, the library exposes roaring bitmaps but **no bloom filter
-  type** — roaring's compressed bitmap is an exact-membership data
-  structure, not probabilistic. If you've seen "CRoaring bloom"
-  cited, it's likely the third-party
-  [`roaring-bloom-filter-rs`](https://github.com/oliverdding/roaring-bloom-filter-rs)
-  crate which uses roaring bitmaps as the bit-store under a classical
-  Bloom — a niche optimisation for very-sparse filters, not generally
-  competitive on speed. Worth confirming with the original source
-  before adding.
+## Note on CRoaring
+
+CRoaring is a roaring-bitmap library, not a bloom filter library.
+It exposes no SBBF-equivalent type; if you saw "CRoaring bloom"
+referenced, it's likely the third-party
+[`roaring-bloom-filter-rs`](https://github.com/oliverdding/roaring-bloom-filter-rs)
+crate, which uses roaring bitmaps as the bit-store under a classical
+Bloom — a niche optimisation for very-sparse filters, not generally
+competitive on speed. Not in this bench.

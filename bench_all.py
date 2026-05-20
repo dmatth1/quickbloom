@@ -48,6 +48,10 @@ COMPARISON_CANDIDATES = [
      "classic     -- textbook K-hash bloom (baseline)"),
     ("comparisons/bloom_xorfuse.c",
      "xorfuse     -- Graf+Lemire binary fuse filter (static; bloom-ABI shim)"),
+    ("comparisons/fastbloom_shim",
+     "fastbloom   -- tomtomwombat/fastbloom (Rust; SipHash-1-3 + concurrency)"),
+    ("comparisons/arrow_rs_sbbf_shim",
+     "arrow_rs    -- arrow-rs parquet::bloom_filter::Sbbf (Rust; XXH64; no prehash API)"),
 ]
 
 

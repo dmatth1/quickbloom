@@ -7,3 +7,6 @@ stage/
 *.pyc
 __pycache__/
 .pytest_cache/
+# Rust shim crates under comparisons/ have their own target/ build dirs
+comparisons/*/target/
+comparisons/*/Cargo.lock

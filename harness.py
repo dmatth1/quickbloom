@@ -92,7 +92,10 @@ class Candidate:
 
 
 def parse_k_hashes(source: str) -> int:
-    m = re.search(r"#define\s+K_HASHES\s+(\d+)", source)
+    # Match either C's `#define K_HASHES 8` or a Rust comment marker
+    # `// K_HASHES 8` so Rust shim crates (which have no #define) can
+    # declare their K via a comment that the harness can read.
+    m = re.search(r"K_HASHES\s+(\d+)", source)
     return int(m.group(1)) if m else 7
 
 
@@ -131,23 +134,70 @@ def _alias_qb_to_bloom(lib: ctypes.CDLL, prefix: str) -> None:
         setattr(lib, f"bloom_{fname}", fn)
 
 
-def compile_candidate(c_path: Path, out_dir: Path) -> Candidate:
-    out_dir.mkdir(parents=True, exist_ok=True)
-    so = out_dir / (c_path.stem + ".so")
-    # Files with "_avx512" in their stem get the extra AVX-512 flags; the
-    # resulting .so won't load on AVX2-only hardware but is fine for the
-    # specific experiment of testing AVX-512 candidates.
-    extra = CFLAGS_AVX512 if "_avx512" in c_path.stem else []
-    # Quickbloom variant entry points need QB_NS pre-defined so the
-    # shared bloom_sbbf.c implementation produces the matching symbols.
-    prefix = QB_VARIANT_PREFIX.get(c_path.stem)
-    qb_defines = [f"-DQB_NS={prefix}"] if prefix else []
-    r = subprocess.run(
-        [CC, *CFLAGS, *extra, *qb_defines, str(c_path), "-o", str(so)],
-        capture_output=True, text=True,
-    )
+class CargoMissingError(RuntimeError):
+    """Raised when a Rust crate candidate can't be built because the
+    Rust toolchain (cargo) is not installed. Callers can catch this to
+    skip Rust candidates gracefully on hosts without rustc."""
+
+
+def _build_rust_crate(crate_dir: Path) -> Path:
+    """Run `cargo build --release` for a cdylib crate at crate_dir and
+    return the path to the produced .so. Crate name must match the
+    directory name."""
+    try:
+        r = subprocess.run(
+            ["cargo", "build", "--release",
+             "--manifest-path", str(crate_dir / "Cargo.toml")],
+            capture_output=True, text=True,
+        )
+    except FileNotFoundError as e:
+        raise CargoMissingError(
+            f"cargo not found on PATH; cannot build Rust candidate at {crate_dir}"
+        ) from e
     if r.returncode != 0:
-        raise RuntimeError(f"compile failed:\n{r.stderr}")
+        raise RuntimeError(
+            f"cargo build failed for {crate_dir}:\n{r.stderr or r.stdout}"
+        )
+    so = crate_dir / "target" / "release" / f"lib{crate_dir.name}.so"
+    if not so.exists():
+        raise RuntimeError(
+            f"cargo built {crate_dir} but expected output {so} is missing"
+        )
+    return so
+
+
+def compile_candidate(c_path: Path, out_dir: Path) -> Candidate:
+    """Build a candidate and return the loaded library with symbol bindings.
+
+    Accepts either:
+      - a `.c` file (built with cc + standard CFLAGS), or
+      - a directory containing a `Cargo.toml` (built with `cargo
+        build --release`; cdylib crate; the produced
+        `lib<dirname>.so` is loaded).
+    """
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    if c_path.is_dir() and (c_path / "Cargo.toml").is_file():
+        so = _build_rust_crate(c_path)
+        source_path = c_path / "src" / "lib.rs"
+        prefix = None  # Rust shims export bloom_* directly
+    else:
+        so = out_dir / (c_path.stem + ".so")
+        # Files with "_avx512" in their stem get the extra AVX-512 flags; the
+        # resulting .so won't load on AVX2-only hardware but is fine for the
+        # specific experiment of testing AVX-512 candidates.
+        extra = CFLAGS_AVX512 if "_avx512" in c_path.stem else []
+        # Quickbloom variant entry points need QB_NS pre-defined so the
+        # shared bloom_sbbf.c implementation produces the matching symbols.
+        prefix = QB_VARIANT_PREFIX.get(c_path.stem)
+        qb_defines = [f"-DQB_NS={prefix}"] if prefix else []
+        r = subprocess.run(
+            [CC, *CFLAGS, *extra, *qb_defines, str(c_path), "-o", str(so)],
+            capture_output=True, text=True,
+        )
+        if r.returncode != 0:
+            raise RuntimeError(f"compile failed:\n{r.stderr}")
+        source_path = c_path
 
     lib = ctypes.CDLL(str(so))
     if prefix:
@@ -205,10 +255,19 @@ def compile_candidate(c_path: Path, out_dir: Path) -> Candidate:
     except AttributeError:
         has_batch8 = False
 
-    source = c_path.read_text()
+    source = source_path.read_text() if source_path.is_file() else ""
+    # Rust shims expose K via an extern function; prefer that over parsing.
+    k = 0
+    try:
+        lib.bloom_k_hashes.restype = ctypes.c_uint32
+        k = int(lib.bloom_k_hashes())
+    except AttributeError:
+        pass
+    if k <= 0:
+        k = parse_k_hashes(source)
     return Candidate(
-        source_path=c_path, so_path=so, lib=lib,
-        k_hashes=parse_k_hashes(source),
+        source_path=source_path, so_path=so, lib=lib,
+        k_hashes=k,
         has_prehash=has_prehash,
         has_batch8=has_batch8,
     )

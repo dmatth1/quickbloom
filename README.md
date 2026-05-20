@@ -165,40 +165,45 @@ across the board; see `bench_all.py` output.
 
 | Implementation             | K | S (128 KB) | M (2 MB) | L (32 MB) | FP rate |
 |----------------------------|---|-----------:|---------:|----------:|--------:|
-| **quickbloom: single_key** | 8 |   **1.52** | **2.21** |  **6.79** | 0.00030 |
-| quickbloom: unified        | 8 |       1.96 |     2.64 |      7.44 | 0.00030 |
-| quickbloom: batched        | 4 |       2.81 |     3.21 |      7.15 | 0.00239 |
-| `krassovsky`               | 5 |       1.83 |     2.74 |      6.94 | 0.00340 |
-| `xorfuse` (binary fuse)    | 3 |       4.19 |     4.77 |     19.54 | 0.00422 |
-| `classic`                  | 8 |      10.20 |    13.60 |     19.53 | 0.00013 |
-| `impala`                   | 8 |      16.61 |    20.20 |     26.03 | 0.00030 |
+| **quickbloom: single_key** | 8 |   **1.64** | **2.42** |      7.16 | 0.00030 |
+| quickbloom: unified        | 8 |       1.98 |     2.70 |      7.58 | 0.00030 |
+| quickbloom: batched        | 4 |       2.84 |     3.34 |      7.00 | 0.00239 |
+| `krassovsky`               | 5 |       1.84 |     2.93 |   **6.51**| 0.00340 |
+| `xorfuse` (binary fuse)    | 3 |       4.24 |     4.76 |     19.52 | 0.00422 |
+| `classic`                  | 8 |      10.15 |    13.13 |     19.38 | 0.00013 |
+| `impala`                   | 8 |      16.49 |    20.11 |     26.27 | 0.00030 |
+| `arrow_rs` SBBF (Rust)     | 8 |      19.66 |    24.15 |     31.87 | 0.00030 |
+| `fastbloom` (Rust)         | 8 |      25.07 |    35.12 |     56.69 | 0.00012 |
 
 Reproduce: `CC=clang python3 bench_all.py --sizes S,M,L --comparisons`.
 
-- **`krassovsky`** (Save Buffer's `PatternedSimd`) is the only reference
-  that's genuinely competitive — within 10–20% on the algorithm-pure
-  comparison. Same `wymum` hash, similar SIMD shape. FP rate is ~10×
-  higher though (K=5); at equal-FP it falls behind.
+- **`krassovsky`** (Save Buffer's `PatternedSimd`) is the closest
+  competitor — within 10–20% on this CPU and slightly *ahead* of
+  `single_key` at the L size (where its `vpgatherqq` lookup pays off
+  on Sapphire Rapids). FP rate is ~10× higher (K=5); at equal-FP it
+  falls behind.
 - **`xorfuse`** (Graf+Lemire binary fuse filter) is a different class:
   static set, ~9 bits/key (vs SBBF's ~21), but probes 3 cache lines
   per contains (vs SBBF's 1) so it loses on query latency. Build cost
   is also ~10–30× higher (~25–210 ns/key vs ~2–7 ns/key for SBBF).
   Right answer for read-only filters; wrong answer for streaming.
-- **`classic`** (textbook K-hash Bloom) loses ~3-7× because K=8 scattered
+- **`classic`** (textbook K-hash Bloom) loses ~3–7× because K=8 scattered
   probes pay K cache-line tag-checks per query; SBBF pays 1.
 - **`impala`** (Apache Parquet reference SBBF, scalar) loses ~10× in
   hash+bloom and ~7× in prehash. Half the penalty is XXH64 vs `wymum`,
   half is scalar bit-set vs SIMD `vptest`.
-
-**Strong competitors not yet in the bench** — `fastbloom` (Rust;
-SipHash-1-3 + concurrency support) and `arrow-rs`'s production SBBF
-(Rust; the canonical Parquet reader/writer) live in the Rust
-ecosystem and would each need a small `extern "C"` wrapper crate to
-hook into this C harness. Tracked as deferred in
-[`comparisons/README.md`](comparisons/README.md). The popular Rust
-`xor`/binary-fuse implementations share an algorithm with our
-in-tree `xorfuse`; numbers should be in the same ballpark on
-equivalent hardware.
+- **`arrow_rs`** (apache/arrow-rs `parquet::bloom_filter::Sbbf`,
+  Rust). The production SBBF every Rust Parquet reader uses. Same
+  XXH64 + scalar SBBF as `impala` but ~25% faster than that
+  reference — Rust's bounds-check elision and inliner help. Still
+  ~10–12× slower than `single_key`. No prehash API exposed.
+- **`fastbloom`** (tomtomwombat/fastbloom, Rust). Markets itself as
+  "the fastest Bloom filter in Rust" — and may well be vs other Rust
+  options, but loses ~15× to `single_key` here. Two reasons: it uses
+  SipHash-1-3 (cryptographic-strength hash, ~5× slower than `wymum`
+  on 16-byte keys), and its block layout probes more memory per
+  query than a 256-bit-block SBBF. The crate's claim is about
+  Rust-vs-Rust, not Rust-vs-hand-tuned-C.
 
 **Head-to-head vs other designs**, at S (128 KB, in L2), contains-miss,
 ns/op min (cyc/op at 2.8 GHz):

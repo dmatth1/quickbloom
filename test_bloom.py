@@ -23,6 +23,8 @@ CANDIDATES = [
     "comparisons/bloom_krassovsky.c",
     "comparisons/bloom_classic.c",
     "comparisons/bloom_xorfuse.c",
+    "comparisons/fastbloom_shim",
+    "comparisons/arrow_rs_sbbf_shim",
 ]
 
 SIZE_LIMITS = [

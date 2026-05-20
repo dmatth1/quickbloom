@@ -1,0 +1,19 @@
+[package]
+name = "arrow_rs_sbbf_shim"
+version = "0.0.1"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+# parquet brings in twox-hash (XXH64) and the SBBF implementation under
+# its bloom_filter module. default-features disable trims out compression
+# codecs, Arrow integration, async, etc. — we just need the SBBF type.
+[dependencies]
+parquet = { version = "*", default-features = false }
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
