@@ -160,63 +160,20 @@ L3), clang -O3, contains-miss hash+bloom path, min ns/op:
 | `arrow_rs` SBBF (Rust)           | 8 | single-key          |      19.66 |    24.15 |     31.87 | 0.00030 |
 | `fastbloom` (Rust)               | 8 | single-key          |      25.07 |    35.12 |     56.69 | 0.00012 |
 
-The **API shape** column matters as much as the latency:
-
-- **single-key**: insert and contains operate on one key at a time.
-  Workloads with arbitrary call patterns (caches, streaming dedup,
-  point lookups) only need this shape; everything in this column
-  comes for free.
-- **single-key + batch8**: exposes a single-key API (same shape as
-  `single_key` / `unified`) *and* an 8-way batched API for callers
-  that can batch. Either shape works; `bloom_*_bulk` routes through
-  the batched path automatically.
-- **batched-only** (`krassovsky`): `PatternedSimd` is fundamentally
-  batched — every contains issues a `vpgatherqq` that loads 4 blocks
-  per instruction and feeds the results back through a single
-  popcount. There is no comparably-tuned single-key code path; if
-  your caller can't deliver keys in groups of 8, this is not really
-  applicable to your workload. **The numbers above measure
-  `krassovsky` in its native batched mode** — the bench routes
-  through `bloom_*_batch8_bulk` internally. Per-key latency in a
-  random-access workload would be much worse.
-- **static set** (`xorfuse`): must be built from the full key set
-  up-front. The `bloom_*` ABI shim defers the populate to first
-  contains; the build is ~25–210 ns/key (vs ~2–7 ns/key for SBBF).
-  Right answer for read-only filters (Tempo block-pruning, Parquet
-  bloom payloads built at write time); wrong answer for streaming.
-
-Reproduce: `CC=clang python3 bench_all.py --sizes S,M,L --comparisons`.
-Prehash-mode numbers (algorithm only) are 20–40% lower across the
-board; see `bench_all.py` output. L falls inside L3 on this 260 MB-L3
-host; on more typical 32 MB-L3 hosts the L row pushes into DRAM and
-the prefetch / batched designs (`unified`, `batched`, `krassovsky`)
-pull further ahead.
-
-### What each row tells you
-
-- **`krassovsky`** is the closest competitor *for callers that can
-  batch* — within 10–20% across regimes and slightly *ahead* of
-  `single_key` at L (where `vpgatherqq` pays off on Sapphire
-  Rapids). For single-key workloads it's not in the race at all
-  because there isn't an optimised single-key path. FP rate is
-  ~10× higher (K=5); at equal-FP it falls behind.
-- **`xorfuse`** uses ~9 bits/key (vs SBBF's ~21) but probes 3 cache
-  lines per contains (vs SBBF's 1), so it loses on query latency
-  even though it wins on memory.
-- **`classic`** loses ~3–7× because K=8 scattered probes pay K
-  cache-line tag-checks per query; SBBF pays 1.
-- **`impala`** (Parquet reference SBBF, scalar C + XXH64) loses ~10×
-  hash+bloom and ~7× prehash. Half the penalty is XXH64 vs `wymum`,
-  half is scalar bit-set vs SIMD `vptest`.
-- **`arrow_rs`** SBBF is the production-grade SBBF every Rust Parquet
-  reader uses. Same algorithm as `impala` and ~25% faster than that
-  C reference (Rust inliner wins on a hot path with no SIMD). Still
-  ~10–12× behind `single_key`. No prehash API.
-- **`fastbloom`** markets as "the fastest Bloom in Rust" — true vs
-  other Rust crates, but ~15× slower than `single_key` here. It uses
-  SipHash-1-3 (much slower than `wymum` on 16-byte keys) and its
-  block layout touches more memory per query. The crate's claim is
-  Rust-vs-Rust, not Rust-vs-hand-tuned-C.
+- **API shape**: `single-key` is unconstrained; `batched-only`
+  (`krassovsky`) requires keys in groups of 8 and isn't applicable
+  to per-key callers; `static set` (`xorfuse`) needs the full key
+  set up-front (~25–210 ns/key build vs ~2–7 ns/key for SBBF).
+- **Why everyone loses to `single_key`**: a slower hash than
+  `wymum` (XXH64 in `impala` / `arrow_rs`, SipHash-1-3 in
+  `fastbloom`) and/or K scattered cache-line probes instead of
+  SBBF's one. `krassovsky` is the only algorithmic peer (same
+  `wymum`, similar SIMD shape) — slightly ahead at L on
+  `vpgatherqq` — but only for batched callers.
+- **Reproduce**: `CC=clang python3 bench_all.py --sizes S,M,L
+  --comparisons`. Prehash-mode numbers are 20–40% lower; L fits in
+  L3 on this 260 MB-L3 host (smaller-L3 hosts push L into DRAM and
+  the prefetch / batched designs pull further ahead).
 
 ## Variants we tried and rejected
 
