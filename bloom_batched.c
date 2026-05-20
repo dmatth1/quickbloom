@@ -25,6 +25,15 @@
 #  define QB_NS qb_batched
 #endif
 
+// quickbloom requires x86_64 with AVX2 + BMI2. See bloom_sbbf.c for the
+// rationale for catching this here rather than letting immintrin.h fail.
+#if !defined(__x86_64__) && !defined(_M_X64)
+#  error "quickbloom requires x86_64"
+#endif
+#if !defined(__AVX2__)
+#  error "quickbloom requires AVX2 — compile with at least -mavx2 -mbmi2"
+#endif
+
 #define K_HASHES 4
 
 #include <stdint.h>

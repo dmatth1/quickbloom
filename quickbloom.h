@@ -86,6 +86,17 @@ uint8_t qb_batched_contains_batch8(void* p, const uint64_t hashes[8]);
 void    qb_batched_insert_batch8_bulk(void* p, const uint64_t* hashes, size_t n);
 size_t  qb_batched_contains_batch8_bulk(void* p, const uint64_t* hashes, size_t n);
 
+// qb_estimate_bits returns a recommended filter size in bits to hold
+// approximately n items at the requested false-positive rate fp. Pass
+// the result to any <NS>_new; the variant rounds it up to a power of
+// two internally.
+//
+// The formula is the classical Bloom filter bit-budget; SBBF's actual
+// FP rate at this sizing is typically within ~2x of fp on small filters
+// and converges to fp as the filter grows. Callers who need a specific
+// FP target on a small filter should over-size (e.g. multiply by 1.5).
+size_t qb_estimate_bits(size_t n, double fp);
+
 #ifdef __cplusplus
 } // extern "C"
 #endif

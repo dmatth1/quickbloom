@@ -21,6 +21,17 @@
 #  error "bloom_sbbf.c requires QB_NS to be defined (e.g. -DQB_NS=qb_single_key). Compile via bloom_single_key.c or bloom_unified.c."
 #endif
 
+// quickbloom requires x86_64 with AVX2 + BMI2. Catch ports to other
+// architectures (ARM, RISC-V, 32-bit x86) at the top of the file with a
+// clear error rather than a wall of confusing intrinsic-not-found
+// messages from immintrin.h.
+#if !defined(__x86_64__) && !defined(_M_X64)
+#  error "quickbloom requires x86_64"
+#endif
+#if !defined(__AVX2__)
+#  error "quickbloom requires AVX2 — compile with at least -mavx2 -mbmi2"
+#endif
+
 #ifndef PREFETCH_LOOKAHEAD
 #  define PREFETCH_LOOKAHEAD 0
 #endif

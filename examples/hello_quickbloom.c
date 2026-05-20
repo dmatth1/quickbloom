@@ -6,15 +6,13 @@
 // Or, if building inside this repo via the top-level Makefile, just
 // run `make example` and it links against build/libquickbloom.a.
 
-#include "quickbloom.h"
+#include <quickbloom.h>
 #include <stdio.h>
 #include <string.h>
 
 int main(void) {
-    // Size the filter for ~10,000 items at ~1% FP. SBBF uses ~16 bits
-    // per key in this size band, so 10,000 * 16 ≈ 160,000 bits is a
-    // safe starting point.
-    void* f = qb_unified_new(160000);
+    // Size the filter for ~10,000 items at ~1% false-positive rate.
+    void* f = qb_unified_new(qb_estimate_bits(10000, 0.01));
     if (!f) {
         fprintf(stderr, "qb_unified_new: out of memory\n");
         return 1;

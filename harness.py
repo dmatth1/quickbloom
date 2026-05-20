@@ -49,12 +49,20 @@ CFLAGS = [
 
 # Filter-size presets. Each spans a different cache regime on a typical
 # x86 server (L1 ~32KB/core, L2 ~256KB-1MB/core, L3 8-260MB shared).
+#
+# n_insert is sized so the filter sits near SBBF's natural load factor
+# of ~21 bits/key for K=8. Loading the filter properly matters because
+# an under-loaded filter ages most blocks empty, which makes contains
+# queries hit the early-exit path on the very first bit and reports
+# unrealistically low latencies. The XL preset is intentionally only
+# half-loaded to keep peak Python harness memory under ~1 GB; the
+# filter still sits well past L3.
 BENCH_SIZES = {
-    # key,   nbits,           bytes,    n_insert,   n_query,    regime
-    "S":  dict(nbits=1 <<  20, n_insert=    50_000, n_query=  200_000),  # 128 KB, in L2
-    "M":  dict(nbits=1 <<  24, n_insert=   800_000, n_query=  500_000),  #   2 MB, in L3
-    "L":  dict(nbits=1 <<  28, n_insert= 1_000_000, n_query=  500_000),  #  32 MB, around L3
-    "XL": dict(nbits=1 <<  32, n_insert=10_000_000, n_query=2_000_000),  # 512 MB, out of L3
+    # key,   nbits,          n_insert,    n_query,     bits/key  regime
+    "S":  dict(nbits=1 <<  20, n_insert=     50_000, n_query=  200_000),  # 21.0  128 KB, in L2
+    "M":  dict(nbits=1 <<  24, n_insert=    800_000, n_query=  500_000),  # 21.0    2 MB, in L3
+    "L":  dict(nbits=1 <<  28, n_insert= 12_500_000, n_query=  500_000),  # 21.5   32 MB, around L3
+    "XL": dict(nbits=1 <<  32, n_insert= 50_000_000, n_query=2_000_000),  # 85.9  512 MB, out of L3
 }
 
 KLEN_DEFAULT = 16

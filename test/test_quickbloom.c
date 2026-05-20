@@ -250,6 +250,30 @@ static void test_batch8(void) {
     qb_batched_free(f);
 }
 
+// qb_estimate_bits sanity. Not a numerical correctness test — just
+// asserts the contract: monotonic in n, monotonic in 1/fp, never zero,
+// rounds up small values to at least one block.
+static void test_estimate_bits(void) {
+    ASSERT(qb_estimate_bits(0,      0.01) >= 256, "estimate(0) >= 256");
+    ASSERT(qb_estimate_bits(100,    0.01) >= 256, "estimate(small) >= 256");
+
+    // Roughly classical: ~9.6 bits per item at 1% FP. Allow generous bounds
+    // (>= 5*n and <= 20*n) so the formula's exact constants can shift
+    // without breaking the test.
+    size_t m = qb_estimate_bits(1000000, 0.01);
+    ASSERT(m >=  5 * 1000000UL, "1%% FP: at least 5 bits/key");
+    ASSERT(m <= 20 * 1000000UL, "1%% FP: at most 20 bits/key");
+
+    // Lower fp ⇒ more bits.
+    ASSERT(qb_estimate_bits(1000000, 0.001) > qb_estimate_bits(1000000, 0.01),
+           "0.1%% FP needs more bits than 1%% FP");
+
+    // Out-of-range fp sanity-bounds rather than crashing.
+    ASSERT(qb_estimate_bits(1000, 0.0) > 0,    "fp=0 returns a positive size");
+    ASSERT(qb_estimate_bits(1000, 1.0) > 0,    "fp=1 returns a positive size");
+    ASSERT(qb_estimate_bits(1000, -1.0) > 0,   "negative fp doesn't crash");
+}
+
 int main(void) {
     printf("quickbloom test (version %s)\n", QUICKBLOOM_VERSION_STRING);
     for (size_t i = 0; i < sizeof(variants) / sizeof(variants[0]); i++) {
@@ -263,6 +287,8 @@ int main(void) {
     }
     printf("[ qb_batched (batch8) ]\n");
     test_batch8();
+    printf("[ qb_estimate_bits ]\n");
+    test_estimate_bits();
     printf("OK\n");
     return 0;
 }

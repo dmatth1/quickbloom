@@ -37,14 +37,15 @@ sudo make install            # installs to /usr/local by default
 ```c
 #include <quickbloom.h>
 
-void* f = qb_unified_new(1000000);   // ~62k items at ~1% FP
+void* f = qb_unified_new(qb_estimate_bits(100000, 0.01));   // 100k items, 1% FP
 qb_unified_insert(f, "hello", 5);
 if (qb_unified_contains(f, "hello", 5)) { /* probably present */ }
 qb_unified_free(f);
 ```
 
-Link with `-lquickbloom`. See `examples/hello_quickbloom.c` for a
-complete runnable example (`make example && ./build/hello_quickbloom`).
+Link with `-lquickbloom -lm` (or use pkg-config: `pkg-config --cflags
+--libs quickbloom`). See `examples/hello_quickbloom.c` for a complete
+runnable example (`make example && ./build/hello_quickbloom`).
 
 ### Run the benchmarks and tests
 
@@ -107,6 +108,9 @@ void    qb_batched_insert_batch8(void* p, const uint64_t hashes[8]);
 uint8_t qb_batched_contains_batch8(void* p, const uint64_t hashes[8]);  // bitmap of 8
 void    qb_batched_insert_batch8_bulk(void* p, const uint64_t* hashes, size_t n);
 size_t  qb_batched_contains_batch8_bulk(void* p, const uint64_t* hashes, size_t n);
+
+// Sizing helper (variant-agnostic)
+size_t qb_estimate_bits(size_t n, double fp);   // bits to hold ~n items at fp
 ```
 
 ### Thread safety
@@ -135,24 +139,26 @@ AVX-512 anyway.
 
 ## Performance
 
-Intel Xeon @ 2.8 GHz (Cascade Lake-class, 33 MB L3), clang -O3,
-contains-miss hash+bloom path, ns/op min.
+> Numbers below are illustrative and **host-dependent**. Crossover
+> points between variants shift with L3 size, DRAM latency, prefetcher
+> aggressiveness, and load on neighbour cores. Run `make bench` (or
+> `python3 bench_all.py`) on your target hardware to see what's true
+> for your CPU.
 
-**quickbloom across the cache hierarchy:**
+Sample capture on Intel Xeon @ 2.1 GHz (Sapphire Rapids-class, 260 MB
+L3), clang -O3, contains-miss hash+bloom path, ns/op min over 3 runs:
 
 | Filter size              | quickbloom: single_key | quickbloom: unified | quickbloom: batched |
 |--------------------------|-----------------------:|--------------------:|--------------------:|
-| S  (128 KB, in L2)       |               **1.99** |                2.56 |                2.72 |
-| M  (2 MB,   in L2/L3)    |                  11.22 |                9.58 |            **7.02** |
-| L  (32 MB,  around L3)   |                  20.05 |           **17.83** |               26.99 |
-| XL (512 MB, in DRAM)     |                  29.47 |           **25.34** |               35.74 |
+| S  (128 KB, in L2)       |               **1.58** |                2.19 |                2.84 |
+| M  (2 MB,   in L3)       |               **2.49** |                2.76 |                3.31 |
+| L  (32 MB,  in L3 here)  |               **6.68** |                7.47 |                7.49 |
 
-Each design wins in a different cache regime on this host: `single_key`
-in L2, `batched` in L3, `unified` out of L3. The crossover points
-shift with L3 size, gather latency, and prefetcher behavior — run the
-bench locally to find what's true for your hardware. Prehash-mode
-numbers (algorithm only, comparable to published cyc/op) are 30–50%
-lower across the board; see `bench_all.py` output.
+On a smaller-L3 host (~33 MB), L falls past L3 and `batched` /
+`unified` pull ahead at that regime — that's the regime they were
+designed for. Prehash-mode numbers (algorithm only, comparable to
+published cyc/op) are 20–40% lower across the board; see
+`bench_all.py` output.
 
 **Head-to-head vs other designs**, at S (128 KB, in L2), contains-miss,
 ns/op min (cyc/op at 2.8 GHz):
@@ -238,7 +244,9 @@ bloom_sbbf.c         shared SBBF implementation (256-bit + wymum + 4-way unroll)
 bloom_single_key.c   entry point: QB_NS=qb_single_key, PREFETCH_LOOKAHEAD=0
 bloom_unified.c      entry point: QB_NS=qb_unified,    PREFETCH_LOOKAHEAD=8
 bloom_batched.c      entry point: QB_NS=qb_batched (64-bit blocks + batched SIMD)
+qb_util.c            variant-agnostic helpers (qb_estimate_bits)
 Makefile             build libquickbloom.{a,so} + test + example; supports install
+quickbloom.pc.in     pkg-config template; installed as quickbloom.pc
 examples/            minimal usage example
 test/                native C correctness tests (mirrors test_bloom.py)
 .github/workflows/   CI: build + test on gcc and clang
@@ -248,6 +256,11 @@ test_bloom.py        Python correctness tests (fixed-length and variable-length 
 comparisons/         reference implementations from other designs (impala,
                      krassovsky, classic) plus their own README
 ```
+
+The shared library follows Linux SONAME convention:
+`libquickbloom.so.0.1.0` is the real file, `libquickbloom.so.0` is the
+SONAME (ABI generation) symlink, `libquickbloom.so` is the linker
+name. A `quickbloom.pc` pkg-config file is installed alongside.
 
 ## Versioning
 
