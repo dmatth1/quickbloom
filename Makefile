@@ -44,7 +44,7 @@ LIB_SO      := $(BUILD)/libquickbloom.so
 LIB_A       := $(BUILD)/libquickbloom.a
 LIB_PC      := $(BUILD)/quickbloom.pc
 
-.PHONY: all lib test example bench install clean
+.PHONY: all lib test example bench bench-hash install clean
 
 all: lib
 
@@ -99,6 +99,15 @@ example: $(BUILD)/hello_quickbloom
 # it always has — independent of the library build above.
 bench:
 	python3 bench_all.py
+
+# Per-hash cost bench. Measures wymum16 / XXH64 / SipHash-1-3 over 16-byte
+# keys with the same compile flags as the rest of the project, so the
+# numbers can be compared directly against the prehash bloom benches.
+$(BUILD)/bench_hash: tools/bench_hash.c | $(BUILD)
+	$(CC) $(CFLAGS) -o $@ tools/bench_hash.c
+
+bench-hash: $(BUILD)/bench_hash
+	$<
 
 install: lib
 	install -d $(DESTDIR)$(PREFIX)/include
