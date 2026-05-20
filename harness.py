@@ -87,6 +87,38 @@ def parse_k_hashes(source: str) -> int:
 CFLAGS_AVX512 = ["-mavx512f", "-mavx512dq", "-mavx512bw", "-mavx512vl"]
 
 
+# Map of variant entry-point filenames to their QB_NS namespace prefix.
+# All other .c files (the comparison implementations in comparisons/)
+# still export the legacy `bloom_*` symbols.
+QB_VARIANT_PREFIX = {
+    "bloom_single_key": "qb_single_key",
+    "bloom_unified":    "qb_unified",
+    "bloom_batched":    "qb_batched",
+}
+
+
+def _alias_qb_to_bloom(lib: ctypes.CDLL, prefix: str) -> None:
+    """For quickbloom variants, alias the namespaced public symbols to the
+    legacy `bloom_*` names on the loaded lib so the rest of the harness
+    keeps working unchanged. The .so itself exports only the namespaced
+    names; the alias lives only on the Python wrapper object."""
+    names = [
+        "new", "free", "insert", "contains",
+        "insert_bulk", "contains_bulk",
+        "insert_prehash", "contains_prehash",
+        "insert_prehash_bulk", "contains_prehash_bulk",
+        "insert_batch8", "contains_batch8",
+        "insert_batch8_bulk", "contains_batch8_bulk",
+    ]
+    for fname in names:
+        qb_name = f"{prefix}_{fname}"
+        try:
+            fn = getattr(lib, qb_name)
+        except AttributeError:
+            continue  # optional symbol (e.g. batch8 on non-batched variants)
+        setattr(lib, f"bloom_{fname}", fn)
+
+
 def compile_candidate(c_path: Path, out_dir: Path) -> Candidate:
     out_dir.mkdir(parents=True, exist_ok=True)
     so = out_dir / (c_path.stem + ".so")
@@ -94,14 +126,20 @@ def compile_candidate(c_path: Path, out_dir: Path) -> Candidate:
     # resulting .so won't load on AVX2-only hardware but is fine for the
     # specific experiment of testing AVX-512 candidates.
     extra = CFLAGS_AVX512 if "_avx512" in c_path.stem else []
+    # Quickbloom variant entry points need QB_NS pre-defined so the
+    # shared bloom_sbbf.c implementation produces the matching symbols.
+    prefix = QB_VARIANT_PREFIX.get(c_path.stem)
+    qb_defines = [f"-DQB_NS={prefix}"] if prefix else []
     r = subprocess.run(
-        [CC, *CFLAGS, *extra, str(c_path), "-o", str(so)],
+        [CC, *CFLAGS, *extra, *qb_defines, str(c_path), "-o", str(so)],
         capture_output=True, text=True,
     )
     if r.returncode != 0:
         raise RuntimeError(f"compile failed:\n{r.stderr}")
 
     lib = ctypes.CDLL(str(so))
+    if prefix:
+        _alias_qb_to_bloom(lib, prefix)
     lib.bloom_new.argtypes = [ctypes.c_size_t]
     lib.bloom_new.restype = ctypes.c_void_p
     lib.bloom_free.argtypes = [ctypes.c_void_p]

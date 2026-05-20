@@ -1,8 +1,9 @@
 // bloom_sbbf.c -- SBBF Bloom filter, single-key API.
 //
-// One implementation, two configurations. Compile with
-//   -DPREFETCH_LOOKAHEAD=0   -> "single_key" variant (lowest in-cache latency)
-//   -DPREFETCH_LOOKAHEAD=8   -> "unified" variant (good across cache hierarchy)
+// One implementation, two PREFETCH_LOOKAHEAD configurations, three
+// possible link-time namespaces. Compile via one of the variant entry
+// points (bloom_single_key.c, bloom_unified.c) or directly with
+// `-DQB_NS=qb_<variant> -DPREFETCH_LOOKAHEAD={0,8}`.
 //
 // Split Block Bloom Filter (Apache Parquet spec):
 //   - 256-bit blocks (8 x 32-bit words), K=8 (one bit per word)
@@ -15,6 +16,11 @@
 //     store-to-load forwarding handles aliased blocks correctly
 //
 // Requirements: x86_64 with AVX2 + BMI2.
+
+#ifndef QB_NS
+#  error "bloom_sbbf.c requires QB_NS to be defined (e.g. -DQB_NS=qb_single_key). Compile via bloom_single_key.c or bloom_unified.c."
+#endif
+
 #ifndef PREFETCH_LOOKAHEAD
 #  define PREFETCH_LOOKAHEAD 0
 #endif
@@ -27,6 +33,13 @@
 #include <stdlib.h>
 #include <string.h>
 #include <immintrin.h>
+
+// Namespace plumbing — every public function is named via QB_API(...)
+// so the same source produces qb_single_key_* or qb_unified_* symbols
+// depending on the QB_NS macro at compile time.
+#define QB_CONCAT2(a, b) a##_##b
+#define QB_CONCAT(a, b) QB_CONCAT2(a, b)
+#define QB_API(name) QB_CONCAT(QB_NS, name)
 
 static inline uint64_t hash16(const void* data) {
     uint64_t a, b;
@@ -50,12 +63,12 @@ static inline uint64_t fasthash64_var(const void* data, size_t len) {
     const uint8_t* tail = p + nblocks * 8;
     uint64_t t = 0;
     switch (len & 7) {
-        case 7: t ^= (uint64_t)tail[6] << 48; /* fall through */
-        case 6: t ^= (uint64_t)tail[5] << 40;
-        case 5: t ^= (uint64_t)tail[4] << 32;
-        case 4: t ^= (uint64_t)tail[3] << 24;
-        case 3: t ^= (uint64_t)tail[2] << 16;
-        case 2: t ^= (uint64_t)tail[1] << 8;
+        case 7: t ^= (uint64_t)tail[6] << 48; __attribute__((fallthrough));
+        case 6: t ^= (uint64_t)tail[5] << 40; __attribute__((fallthrough));
+        case 5: t ^= (uint64_t)tail[4] << 32; __attribute__((fallthrough));
+        case 4: t ^= (uint64_t)tail[3] << 24; __attribute__((fallthrough));
+        case 3: t ^= (uint64_t)tail[2] << 16; __attribute__((fallthrough));
+        case 2: t ^= (uint64_t)tail[1] << 8;  __attribute__((fallthrough));
         case 1: t ^= (uint64_t)tail[0];
                 t *= M; t ^= t >> 23; t *= M; h ^= t; h *= M;
     }
@@ -97,29 +110,40 @@ static inline void prefetch_block_for(const bloom_t* b, uint64_t h64) {
 }
 #endif
 
-void* bloom_new(size_t nbits) {
+// QB_API(new) returns NULL on allocation failure. The returned pointer
+// must be released with QB_API(free).
+void* QB_API(new)(size_t nbits) {
     size_t nblocks = (nbits + 255) / 256;
     if (nblocks == 0) nblocks = 1;
     size_t pow2 = 1;
     while (pow2 < nblocks) pow2 <<= 1;
     nblocks = pow2;
     bloom_t* b = (bloom_t*)malloc(sizeof(bloom_t));
-    b->nblocks_mask = nblocks - 1;
+    if (!b) return NULL;
     size_t nbytes = nblocks * SBBF_BLOCK_BYTES;
     void* mem = NULL;
-    if (posix_memalign(&mem, 32, nbytes) != 0) mem = calloc(nbytes, 1);
-    else memset(mem, 0, nbytes);
+    // posix_memalign guarantees 32-byte alignment required by _mm256_load.
+    // We do not fall back to calloc on failure because calloc cannot
+    // satisfy the alignment contract; failing fast is safer than
+    // returning a filter that will SEGV on the first insert.
+    if (posix_memalign(&mem, 32, nbytes) != 0) {
+        free(b);
+        return NULL;
+    }
+    memset(mem, 0, nbytes);
+    b->nblocks_mask = nblocks - 1;
     b->bits = (uint32_t*)mem;
     return b;
 }
 
-void bloom_free(void* p) {
+void QB_API(free)(void* p) {
+    if (!p) return;
     bloom_t* b = (bloom_t*)p;
     free(b->bits);
     free(b);
 }
 
-void bloom_insert(void* p, const void* key, size_t len) {
+void QB_API(insert)(void* p, const void* key, size_t len) {
     bloom_t* b = (bloom_t*)p;
     uint64_t h = bloom_hash(key, len);
     uint32_t* blk = block_for(b, h);
@@ -128,7 +152,7 @@ void bloom_insert(void* p, const void* key, size_t len) {
     _mm256_store_si256((__m256i*)blk, _mm256_or_si256(cur, m));
 }
 
-int bloom_contains(void* p, const void* key, size_t len) {
+int QB_API(contains)(void* p, const void* key, size_t len) {
     bloom_t* b = (bloom_t*)p;
     uint64_t h = bloom_hash(key, len);
     uint32_t* blk = block_for(b, h);
@@ -142,7 +166,7 @@ int bloom_contains(void* p, const void* key, size_t len) {
     _mm256_store_si256((__m256i*)(P), _mm256_or_si256(c_, M));    \
 } while (0)
 
-void bloom_insert_bulk(void* p, const uint8_t* keys, size_t klen, size_t n) {
+void QB_API(insert_bulk)(void* p, const uint8_t* keys, size_t klen, size_t n) {
     bloom_t* b = (bloom_t*)p;
     size_t i = 0;
     if (klen == 16) {
@@ -174,10 +198,10 @@ void bloom_insert_bulk(void* p, const uint8_t* keys, size_t klen, size_t n) {
             APPLY(p0, m0); APPLY(p1, m1); APPLY(p2, m2); APPLY(p3, m3);
         }
     }
-    for (; i < n; i++) bloom_insert(b, keys + i * klen, klen);
+    for (; i < n; i++) QB_API(insert)(b, keys + i * klen, klen);
 }
 
-size_t bloom_contains_bulk(void* p, const uint8_t* keys, size_t klen, size_t n) {
+size_t QB_API(contains_bulk)(void* p, const uint8_t* keys, size_t klen, size_t n) {
     bloom_t* b = (bloom_t*)p;
     size_t hits = 0;
     size_t i = 0;
@@ -218,12 +242,12 @@ size_t bloom_contains_bulk(void* p, const uint8_t* keys, size_t klen, size_t n) 
         }
     }
     for (; i < n; i++) {
-        if (bloom_contains(b, keys + i * klen, klen)) hits++;
+        if (QB_API(contains)(b, keys + i * klen, klen)) hits++;
     }
     return hits;
 }
 
-void bloom_insert_prehash(void* p, uint64_t h) {
+void QB_API(insert_prehash)(void* p, uint64_t h) {
     bloom_t* b = (bloom_t*)p;
     uint32_t* blk = block_for(b, h);
     __m256i m = mask_for((uint32_t)h);
@@ -231,7 +255,7 @@ void bloom_insert_prehash(void* p, uint64_t h) {
     _mm256_store_si256((__m256i*)blk, _mm256_or_si256(cur, m));
 }
 
-int bloom_contains_prehash(void* p, uint64_t h) {
+int QB_API(contains_prehash)(void* p, uint64_t h) {
     bloom_t* b = (bloom_t*)p;
     uint32_t* blk = block_for(b, h);
     __m256i m = mask_for((uint32_t)h);
@@ -239,7 +263,7 @@ int bloom_contains_prehash(void* p, uint64_t h) {
     return _mm256_testc_si256(cur, m);
 }
 
-void bloom_insert_prehash_bulk(void* p, const uint64_t* hashes, size_t n) {
+void QB_API(insert_prehash_bulk)(void* p, const uint64_t* hashes, size_t n) {
     bloom_t* b = (bloom_t*)p;
     size_t i = 0;
     for (; i + 4 <= n; i += 4) {
@@ -261,10 +285,10 @@ void bloom_insert_prehash_bulk(void* p, const uint64_t* hashes, size_t n) {
         __m256i m3 = mask_for((uint32_t)hashes[i+3]);
         APPLY(p0, m0); APPLY(p1, m1); APPLY(p2, m2); APPLY(p3, m3);
     }
-    for (; i < n; i++) bloom_insert_prehash(p, hashes[i]);
+    for (; i < n; i++) QB_API(insert_prehash)(p, hashes[i]);
 }
 
-size_t bloom_contains_prehash_bulk(void* p, const uint64_t* hashes, size_t n) {
+size_t QB_API(contains_prehash_bulk)(void* p, const uint64_t* hashes, size_t n) {
     bloom_t* b = (bloom_t*)p;
     size_t hits = 0;
     size_t i = 0;
@@ -295,7 +319,7 @@ size_t bloom_contains_prehash_bulk(void* p, const uint64_t* hashes, size_t n) {
         hits += _mm256_testc_si256(c3, m3);
     }
     for (; i < n; i++) {
-        if (bloom_contains_prehash(p, hashes[i])) hits++;
+        if (QB_API(contains_prehash)(p, hashes[i])) hits++;
     }
     return hits;
 }

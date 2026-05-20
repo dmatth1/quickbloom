@@ -1,0 +1,51 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        cc: [gcc, clang]
+    name: build+test (${{ matrix.cc }})
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install clang
+        if: matrix.cc == 'clang'
+        run: sudo apt-get update && sudo apt-get install -y clang
+
+      - name: build library
+        run: make lib CC=${{ matrix.cc }}
+
+      - name: build example
+        run: make example CC=${{ matrix.cc }}
+
+      - name: run example
+        run: ./build/hello_quickbloom
+
+      - name: build and run native tests
+        run: make test CC=${{ matrix.cc }}
+
+      - name: install (dry-run into staging)
+        run: make install CC=${{ matrix.cc }} DESTDIR=$PWD/stage PREFIX=/usr
+
+      - name: verify install layout
+        run: |
+          test -f stage/usr/include/quickbloom.h
+          test -f stage/usr/lib/libquickbloom.a
+          test -f stage/usr/lib/libquickbloom.so
+
+  python-bench-smoke:
+    runs-on: ubuntu-latest
+    name: python bench smoke (smallest size only)
+    steps:
+      - uses: actions/checkout@v4
+      - name: smoke test python harness
+        run: python3 bench_all.py --sizes S

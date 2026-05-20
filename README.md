@@ -24,21 +24,37 @@ includes them.
 
 ## Quick start
 
+### Use it in your project
+
 ```sh
-# Build + bench the three top-level designs, full sweep across cache regimes
-CC=clang python3 bench_all.py
+git clone https://github.com/dmatth1/quickbloom
+cd quickbloom
+make             # builds build/libquickbloom.{a,so}
+sudo make install            # installs to /usr/local by default
+                             # override with PREFIX=/your/path
+```
 
-# Include the reference implementations in comparisons/ in the same run
-CC=clang python3 bench_all.py --comparisons
+```c
+#include <quickbloom.h>
 
-# Just the endpoints (skip M and L)
-CC=clang python3 bench_all.py --sizes S,XL
+void* f = qb_unified_new(1000000);   // ~62k items at ~1% FP
+qb_unified_insert(f, "hello", 5);
+if (qb_unified_contains(f, "hello", 5)) { /* probably present */ }
+qb_unified_free(f);
+```
 
-# Equal-FP comparison: each candidate is sized to hit FP <= 0.001
-CC=clang python3 bench_all.py --target-fp 0.001
+Link with `-lquickbloom`. See `examples/hello_quickbloom.c` for a
+complete runnable example (`make example && ./build/hello_quickbloom`).
 
-# Correctness tests (fixed-length + variable-length keys)
-python3 test_bloom.py
+### Run the benchmarks and tests
+
+```sh
+make test                                       # native C correctness tests
+CC=clang python3 bench_all.py                   # full Python bench sweep
+CC=clang python3 bench_all.py --comparisons     # include reference impls
+CC=clang python3 bench_all.py --sizes S,XL      # just the endpoints
+CC=clang python3 bench_all.py --target-fp 0.001 # equal-FP comparison
+python3 test_bloom.py                           # Python correctness tests
 ```
 
 `bench_all.py` reports min/median/p90 ns/op at each size for both the
@@ -66,27 +82,42 @@ a `fasthash64` fallback for variable-length keys.
 
 ## ABI
 
+The three variants live side-by-side in one library with namespaced
+symbols, so you can pick a different variant for different code paths in
+the same binary. `<NS>` below is one of `qb_single_key`, `qb_unified`,
+`qb_batched`. Full declarations are in `quickbloom.h`.
+
 ```c
-// Core API (all three implementations)
-void*  bloom_new(size_t nbits);
-void   bloom_free(void*);
-void   bloom_insert(void*, const void* key, size_t len);
-int    bloom_contains(void*, const void* key, size_t len);
-void   bloom_insert_bulk(void*, const uint8_t* keys, size_t klen, size_t n);
-size_t bloom_contains_bulk(void*, const uint8_t* keys, size_t klen, size_t n);
+// Core API (all three variants)
+void*  <NS>_new(size_t nbits);              // NULL on alloc failure
+void   <NS>_free(void* p);                  // accepts NULL
+void   <NS>_insert(void* p, const void* key, size_t len);
+int    <NS>_contains(void* p, const void* key, size_t len);
+void   <NS>_insert_bulk(void* p, const uint8_t* keys, size_t klen, size_t n);
+size_t <NS>_contains_bulk(void* p, const uint8_t* keys, size_t klen, size_t n);
 
-// Pre-hashed bulk (all three; lets you hash once and reuse)
-void   bloom_insert_prehash(void*, uint64_t hash);
-int    bloom_contains_prehash(void*, uint64_t hash);
-void   bloom_insert_prehash_bulk(void*, const uint64_t* hashes, size_t n);
-size_t bloom_contains_prehash_bulk(void*, const uint64_t* hashes, size_t n);
+// Pre-hashed (all three; lets you hash once and reuse)
+void   <NS>_insert_prehash(void* p, uint64_t hash);
+int    <NS>_contains_prehash(void* p, uint64_t hash);
+void   <NS>_insert_prehash_bulk(void* p, const uint64_t* hashes, size_t n);
+size_t <NS>_contains_prehash_bulk(void* p, const uint64_t* hashes, size_t n);
 
-// 8-way batched (bloom_batched.c only)
-void    bloom_insert_batch8(void*, const uint64_t hashes[8]);
-uint8_t bloom_contains_batch8(void*, const uint64_t hashes[8]);  // bitmap of 8 results
-void    bloom_insert_batch8_bulk(void*, const uint64_t* hashes, size_t n);
-size_t  bloom_contains_batch8_bulk(void*, const uint64_t* hashes, size_t n);
+// 8-way batched (qb_batched only)
+void    qb_batched_insert_batch8(void* p, const uint64_t hashes[8]);
+uint8_t qb_batched_contains_batch8(void* p, const uint64_t hashes[8]);  // bitmap of 8
+void    qb_batched_insert_batch8_bulk(void* p, const uint64_t* hashes, size_t n);
+size_t  qb_batched_contains_batch8_bulk(void* p, const uint64_t* hashes, size_t n);
 ```
+
+### Thread safety
+
+- Concurrent **reads** (`<NS>_contains*`, `qb_batched_contains_batch8*`)
+  are safe.
+- Concurrent **writes** (`<NS>_insert*`) are **not** safe; the bit-set
+  is done with a non-atomic load-or-store. Callers that insert
+  concurrently must provide their own synchronisation.
+- Reads concurrent with writes may see partial state but never a false
+  negative once the write completes.
 
 ## Build target & CPU coverage
 
@@ -187,30 +218,45 @@ Correctness (`test_bloom.py` and `diff_test` in the bench):
 
 ```c
 if (filter_size_bytes < L3_size / 8) {
-    use(bloom_single_key);          // in-cache
+    use(qb_single_key_*);            // in-cache
 } else if (caller_can_batch_8) {
-    use(bloom_batched);              // 8-way batched ABI win
+    use(qb_batched_*);                // 8-way batched ABI win
 } else {
-    use(bloom_unified);              // safe default; also fine when size is unknown
+    use(qb_unified_*);                // safe default; also fine when size is unknown
 }
 ```
 
-If unsure, use `bloom_unified.c` — within ~15% of the best at every size.
+If unsure, use `qb_unified_*` — within ~15% of the best at every size.
 
 ## Files
 
 ```
-bloom_sbbf.c         SBBF 256-bit + wymum + 4-way unroll; PREFETCH_LOOKAHEAD macro
-bloom_single_key.c   stub: PREFETCH_LOOKAHEAD=0, includes bloom_sbbf.c
-bloom_unified.c      stub: PREFETCH_LOOKAHEAD=8, includes bloom_sbbf.c
-bloom_batched.c      64-bit blocks + SIMD batched mask, scalar contains
+quickbloom.h         public header declaring all three variants' APIs
+bloom_sbbf.c         shared SBBF implementation (256-bit + wymum + 4-way unroll);
+                     instantiated by bloom_single_key.c and bloom_unified.c
+                     with different QB_NS / PREFETCH_LOOKAHEAD
+bloom_single_key.c   entry point: QB_NS=qb_single_key, PREFETCH_LOOKAHEAD=0
+bloom_unified.c      entry point: QB_NS=qb_unified,    PREFETCH_LOOKAHEAD=8
+bloom_batched.c      entry point: QB_NS=qb_batched (64-bit blocks + batched SIMD)
+Makefile             build libquickbloom.{a,so} + test + example; supports install
+examples/            minimal usage example
+test/                native C correctness tests (mirrors test_bloom.py)
+.github/workflows/   CI: build + test on gcc and clang
 harness.py           compile + diff_test + benchmark infrastructure
-bench_all.py         run benchmarks across cache regimes; --target-fp / --comparisons
-test_bloom.py        correctness tests (fixed-length and variable-length keys)
+bench_all.py         benchmark sweep across cache regimes; --target-fp / --comparisons
+test_bloom.py        Python correctness tests (fixed-length and variable-length keys)
 comparisons/         reference implementations from other designs (impala,
                      krassovsky, classic) plus their own README
 ```
 
+## Versioning
+
+Current release: `0.1.0`. Version macros are exposed in `quickbloom.h`
+(`QUICKBLOOM_VERSION_{MAJOR,MINOR,PATCH}`, `QUICKBLOOM_VERSION_STRING`).
+We follow semantic versioning for the C ABI declared in `quickbloom.h`:
+breaking changes bump major, additive changes bump minor, fixes bump
+patch.
+
 ## License
 
-MIT.
+MIT — see [LICENSE](LICENSE).
