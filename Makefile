@@ -44,7 +44,7 @@ LIB_SO      := $(BUILD)/libquickbloom.so
 LIB_A       := $(BUILD)/libquickbloom.a
 LIB_PC      := $(BUILD)/quickbloom.pc
 
-.PHONY: all lib test example bench bench-hash bench-atomic install clean
+.PHONY: all lib test example bench bench-hash install clean
 
 all: lib
 
@@ -107,14 +107,6 @@ $(BUILD)/bench_hash: tools/bench_hash.c | $(BUILD)
 	$(CC) $(CFLAGS) -o $@ tools/bench_hash.c
 
 bench-hash: $(BUILD)/bench_hash
-	$<
-
-# Concurrent-insert prototype: measures atomic vs non-atomic block-OR.
-# Quantifies the cost of making qb_*_insert safe under concurrent writers.
-$(BUILD)/bench_atomic_insert: tools/bench_atomic_insert.c | $(BUILD)
-	$(CC) $(CFLAGS) -o $@ tools/bench_atomic_insert.c
-
-bench-atomic: $(BUILD)/bench_atomic_insert
 	$<
 
 install: lib
