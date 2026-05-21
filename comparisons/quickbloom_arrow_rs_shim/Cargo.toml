@@ -1,0 +1,19 @@
+[package]
+name = "quickbloom_arrow_rs_shim"
+version = "0.0.1"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+# Same XXH64 hash as arrow-rs's Sbbf, so the head-to-head measures
+# *algorithm + SIMD*, not hash. Direct dep on twox-hash to keep the
+# shim small and not pull in all of arrow-rs.
+[dependencies]
+twox-hash = { version = "1.6", default-features = false }
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1

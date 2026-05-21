@@ -52,6 +52,8 @@ COMPARISON_CANDIDATES = [
      "fastbloom   -- tomtomwombat/fastbloom (Rust; SipHash-1-3 + concurrency)"),
     ("comparisons/arrow_rs_sbbf_shim",
      "arrow_rs    -- arrow-rs parquet::bloom_filter::Sbbf (Rust; XXH64; no prehash API)"),
+    ("comparisons/quickbloom_arrow_rs_shim",
+     "qb_rs       -- quickbloom Rust port: AVX2 vptest + XXH64 (head-to-head vs arrow_rs)"),
 ]
 
 
