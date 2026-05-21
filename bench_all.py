@@ -59,11 +59,19 @@ def fmt(stat):
 
 def header():
     info = harness.cpu_info()
+    l2_kb = harness.L2_BYTES // 1024
+    l3_mb = harness.L3_BYTES // 1024 // 1024
     print("# Bloom filter benchmark")
     print(f"# CPU:    {info['model']}  @ {info['mhz']:.0f} MHz")
-    print(f"# Cache:  L1d {info['L1d_kb']} KB / L2 {info['L2_kb']} KB / L3 {info['L3_mb']} MB")
+    print(f"# Cache:  L1d {info['L1d_kb']} KB / L2 {l2_kb} KB/core / L3 {l3_mb} MB")
     print(f"# Build:  {harness.CC} -O3 -mavx2 -mbmi2 -mfma -maes")
     print(f"# Stats:  min/median/p90 ns/op (lower is better)")
+    print("# Sizes:  picked from detected L2/L3 (set QB_L2_KB / QB_L3_MB to override):")
+    for k, v in harness.BENCH_SIZES.items():
+        mb = v["nbits"] / 8 / 1024 / 1024
+        kb = v["nbits"] / 8 / 1024
+        label = f"{mb:6.1f} MB" if mb >= 1 else f"{kb:6.0f} KB"
+        print(f"#          {k:>2}: {label}  n_insert={v['n_insert']:>11,}  n_query={v['n_query']:>9,}")
     print()
 
 

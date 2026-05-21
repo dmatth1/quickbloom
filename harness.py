@@ -51,29 +51,127 @@ CFLAGS = [
     "-lm",
 ]
 
-# Filter-size presets. Each spans a different cache regime on a typical
-# x86 server (L1 ~32KB/core, L2 ~256KB-1MB/core, L3 8-260MB shared).
+# Filter-size presets are computed from the host's L2-per-core and
+# L3 sizes so the four regimes (S=in-L2, M=just past L2, L=around L3,
+# XL=DRAM) actually exercise those regimes on whatever box the bench
+# runs on. Override the detection with QB_L2_KB / QB_L3_MB env vars
+# for reproducibility across hosts.
 #
-# n_insert is sized so the filter sits near SBBF's natural load factor
-# of ~21 bits/key for K=8. Loading the filter properly matters because
-# an under-loaded filter ages most blocks empty, which makes contains
-# queries hit the early-exit path on the very first bit and reports
-# unrealistically low latencies. The XL preset is intentionally only
-# half-loaded to keep peak Python harness memory under ~1 GB; the
-# filter still sits well past L3.
-BENCH_SIZES = {
-    # key,   nbits,          n_insert,    n_query,     bits/key  regime
-    "S":  dict(nbits=1 <<  20, n_insert=     50_000, n_query=  200_000),  # 21.0  128 KB, in L2
-    "M":  dict(nbits=1 <<  24, n_insert=    800_000, n_query=  500_000),  # 21.0    2 MB, in L3
-    "L":  dict(nbits=1 <<  28, n_insert= 12_500_000, n_query=  500_000),  # 21.5   32 MB, around L3
-    "XL": dict(nbits=1 <<  32, n_insert= 50_000_000, n_query=2_000_000),  # 85.9  512 MB, out of L3
-}
+# n_insert targets ~21 bits/key (SBBF natural load for K=8) so the
+# filter is realistically populated; an under-loaded filter ages most
+# blocks empty, which lets contains hit the early-exit path on the
+# first bit and reports unrealistically low latencies. XL is
+# intentionally quarter-loaded to keep peak harness memory in check.
+
+def _read_cache_bytes(index: int) -> int:
+    """Per-cpu cache size at /sys/devices/system/cpu/cpu0/cache/indexN/size.
+
+    index2 is L2, index3 is L3. The kernel reports the cache *visible
+    to cpu0*, which on every modern Intel/AMD part is the per-core L2
+    and the shared L3. Returns 0 if the file is missing or unparseable.
+    """
+    try:
+        with open(f"/sys/devices/system/cpu/cpu0/cache/index{index}/size") as f:
+            v = f.read().strip()
+    except OSError:
+        return 0
+    try:
+        if v.endswith("K"): return int(v[:-1]) * 1024
+        if v.endswith("M"): return int(v[:-1]) * 1024 * 1024
+        return int(v)
+    except ValueError:
+        return 0
+
+
+def detect_cache_bytes() -> tuple[int, int]:
+    """Return (L2 per core, L3 total) in bytes for the host.
+
+    Reads /sys first (most reliable); falls back to lscpu output and
+    finally to a 1 MB L2 / 32 MB L3 default if neither is available.
+    QB_L2_KB and QB_L3_MB env vars override the detected values.
+    """
+    env_l2 = os.environ.get("QB_L2_KB")
+    env_l3 = os.environ.get("QB_L3_MB")
+
+    l2 = int(env_l2) * 1024 if env_l2 else _read_cache_bytes(2)
+    l3 = int(env_l3) * 1024 * 1024 if env_l3 else _read_cache_bytes(3)
+
+    if not l2 or not l3:
+        info = cpu_info()
+        if not l2 and info["L2_kb"]:
+            l2 = info["L2_kb"] * 1024
+            # lscpu's L2 is sometimes aggregate across cores. Divide by
+            # core count if it's implausibly large for a single core.
+            n = os.cpu_count() or 1
+            if l2 > 16 * 1024 * 1024 and n > 1:
+                l2 //= n
+        if not l3 and info["L3_mb"]:
+            l3 = info["L3_mb"] * 1024 * 1024
+
+    if not l2: l2 = 1 * 1024 * 1024
+    if not l3: l3 = 32 * 1024 * 1024
+    return l2, l3
+
+
+def _next_pow2(n: int) -> int:
+    p = 1
+    while p < n:
+        p <<= 1
+    return p
+
+
+def _prev_pow2(n: int) -> int:
+    p = 1
+    while (p << 1) <= n:
+        p <<= 1
+    return p
+
+
+def compute_bench_sizes(l2_per_core: int, l3_total: int) -> dict:
+    """Pick filter sizes that span the cache hierarchy on this host.
+
+    Footprint targets:
+      S  ~= L2 / 8           well inside L2 (round up; small fits anyway)
+      M  ~= L2 * 2           just past per-core L2 (round up)
+      L  ~= L3               sits right at L3 (round down so it fits)
+      XL ~= L3 * 4           deep DRAM (round up)
+    Capped so a single bench run stays under a few GB of memory on
+    hosts with very large L3 (EPYC, Granite Rapids). L caps at 256 MB
+    filter, XL at 512 MB filter — past that, you're measuring DRAM
+    latency either way and bigger doesn't change the regime.
+    n_insert is 21 bits/key for S/M/L (SBBF natural load); XL is
+    quarter-loaded (84 bits/key) so the keys buffer + filter stay
+    tractable.
+    """
+    # Filter-size caps (in bits) to bound per-run memory on hosts with
+    # very large L3. L peaks at 256 MB filter (~102M keys × 16 B ≈
+    # 1.6 GB keys buffer); XL peaks at 512 MB filter (~51M keys at
+    # 84 bpk ≈ 820 MB keys buffer). Past those, the regime is
+    # DRAM-bound regardless and bigger doesn't measure anything new.
+    L_BITS_MAX  = 1 << 31
+    XL_BITS_MAX = 1 << 32
+
+    s_bits  = _next_pow2(max(l2_per_core // 8, 128 * 1024) * 8)
+    m_bits  = _next_pow2(max(l2_per_core * 2,  2 * 1024 * 1024) * 8)
+    l_bits  = min(max(_prev_pow2(l3_total * 8), m_bits * 4), L_BITS_MAX)
+    xl_bits = min(_next_pow2(max(l3_total * 4, 512 * 1024 * 1024) * 8), XL_BITS_MAX)
+
+    return {
+        "S":  dict(nbits=s_bits,  n_insert=max(1, s_bits  // 21), n_query=  200_000),
+        "M":  dict(nbits=m_bits,  n_insert=max(1, m_bits  // 21), n_query=  500_000),
+        "L":  dict(nbits=l_bits,  n_insert=max(1, l_bits  // 21), n_query=  500_000),
+        "XL": dict(nbits=xl_bits, n_insert=max(1, xl_bits // 84), n_query=2_000_000),
+    }
+
+
+L2_BYTES, L3_BYTES = detect_cache_bytes()
+BENCH_SIZES = compute_bench_sizes(L2_BYTES, L3_BYTES)
 
 KLEN_DEFAULT = 16
 FP_RATE_LIMIT = 0.005
 
-# Back-compat: the old pair of constants several scripts use.
-NBITS_DEFAULT   = BENCH_SIZES["S"]["nbits"]
+# Back-compat: the old constants several scripts still reference.
+NBITS_DEFAULT    = BENCH_SIZES["S"]["nbits"]
 N_INSERT_DEFAULT = BENCH_SIZES["S"]["n_insert"]
 N_QUERY_DEFAULT  = BENCH_SIZES["S"]["n_query"]
 NBITS_LARGE      = BENCH_SIZES["XL"]["nbits"]
