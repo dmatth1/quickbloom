@@ -125,27 +125,39 @@ need a NEON re-derivation.
 
 ### quickbloom
 
-Native C bench (`make bench-qb`), min ns/op across isolated runs:
+Native C bench (`make bench-qb`), single-key API, min ns/op across
+isolated runs:
 
 | Size                 | hash+bloom | prehash |
 |----------------------|-----------:|--------:|
-| S (128 KB)           |       2.29 |    1.37 |
-| M (2 MB)             |       5.73 |    2.70 |
-| L (32 MB)            |      18.61 |   11.66 |
+| S (128 KB)           |       2.85 |    2.06 |
+| M (2 MB)             |       5.47 |    3.10 |
+| L (32 MB)            |      16.09 |    9.56 |
 
-Hash+bloom is the full `qb_contains(bytes, len)` path. Prehash is
-the kernel alone, for callers using `qb_contains_prehash(uint64)`.
-The S→M jump reflects this host's L2/L3 boundary at 1 MB per core;
-on hosts with larger L2 (Sapphire Rapids and newer have 2–8 MB per
-core) M stays L2-resident and the jump shrinks.
+Hash+bloom is `qb_contains(bytes, len)` called one key at a time.
+Prehash is `qb_contains_prehash(uint64)` — the kernel alone, for
+callers that already have a 64-bit hash. The S→M jump reflects
+this host's L2/L3 boundary at 1 MB per core; on hosts with larger
+L2 (Sapphire Rapids and newer have 2–8 MB per core) M stays
+L2-resident and the jump shrinks.
+
+Bulk callers (`qb_contains_bulk` / `qb_contains_prehash_bulk`) get
+a 4-way-unrolled path that issues 4 block loads in parallel and
+trades latency for throughput: at S this drops prehash miss to
+1.25 ns (~1.7× faster than single-key); at L both paths converge
+to ~9 ns because they're DRAM-bound either way.
 
 ### Comparison
 
-Prehash mode, so probe kernels only:
+Prehash mode, single-key path, so probe kernels only. Comparison
+candidates' `*_bulk_prehash` entry points are for-loops over the
+single-key path (no internal unrolling), so the numbers below are
+also their single-key kernel cost — apples-to-apples with
+quickbloom's single-key.
 
 | Implementation         | K | S       | M       | L       | FP rate |
 |------------------------|---|--------:|--------:|--------:|--------:|
-| **quickbloom**         | 8 | **1.37**| **2.70**| **11.66**| 0.00037 |
+| **quickbloom**         | 8 | **2.06**| **3.10**| **9.56**| 0.00037 |
 | `xorfuse` (binary fuse)| 3 |    4.52 |    8.49 |    25.24| 0.00394 |
 | `krassovsky` ¹         | 5 |    4.96 |    7.11 |    25.15| 0.00353 |
 | `classic`              | 8 |    8.57 |   12.74 |    32.11| 0.00013 |
@@ -222,10 +234,11 @@ Bench harness:
   bench header.
 - The headline quickbloom numbers come from `make bench-qb`, a
   native C bench that times via `clock_gettime` inside the C
-  binary (no ctypes boundary). The Python harness (`make bench`,
-  `bench_all.py`) is the cross-candidate sweep and is what the
-  comparison table uses; FFI overhead per bulk call is amortized
-  over the call's n_keys and is below measurement noise.
+  binary (no ctypes boundary). It emits both the single-key and
+  the bulk-amortized (4-way unrolled) paths under each size; the
+  perf table above uses the single-key numbers. The Python
+  harness (`make bench`, `bench_all.py`) is the cross-candidate
+  sweep and is what the comparison table uses.
 
 Correctness (`test_bloom.py` and `diff_test` in the bench):
 
