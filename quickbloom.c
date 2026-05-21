@@ -122,11 +122,21 @@ static inline uint32_t log2_pow2(size_t n) {
     return k;
 }
 
-// qb_new returns NULL on allocation failure. The returned pointer
-// must be released with qb_free.
+// Hard cap on nblocks. Block index is computed from the upper 32
+// bits of the hash, so any nblocks > 2^32 leaves bits unreachable
+// (silent quality degradation). We cap well below that — 2^31
+// blocks = 64 GiB filter, more than any realistic deployment — and
+// keep block_for's right-shift count in [1, 32], avoiding shift-by-
+// out-of-range UB on absurd inputs.
+#define QB_MAX_NBLOCKS ((size_t)1 << 31)
+
+// qb_new returns NULL on allocation failure or if nbits is so large
+// that the resulting filter would exceed QB_MAX_NBLOCKS. The
+// returned pointer must be released with qb_free.
 void* qb_new(size_t nbits) {
     size_t nblocks = (nbits + 255) / 256;
     if (nblocks == 0) nblocks = 1;
+    if (nblocks > QB_MAX_NBLOCKS) return NULL;
     size_t pow2 = 1;
     while (pow2 < nblocks) pow2 <<= 1;
     nblocks = pow2;

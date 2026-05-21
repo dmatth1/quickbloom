@@ -44,10 +44,12 @@ candidates are skipped; the C-only path keeps working.
   write time), wrong shape for streaming dedup.
 
 * **`bloom_impala.c` and `arrow_rs_sbbf_shim/` share an algorithm.**
-  Both are Parquet-spec SBBF + XXH64 + scalar bit-set. arrow-rs is
-  ~25% faster than the C impala reference (Rust inliner wins on this
-  branch-light hot path); both lose to quickbloom by ~6× in prehash
-  on the scalar-vs-SIMD bit-test alone.
+  Both are Parquet-spec SBBF + XXH64 + scalar bit-set. The Rust shim
+  is the slower of the two in the current bench (arrow_rs hash+bloom
+  M ≈ 29 ns; impala prehash M ≈ 11 ns + XXH64 ≈ 3.5 ns ≈ 14.6 ns),
+  presumably from the dyn-dispatch path inside `parquet::bloom_filter`
+  plus the lack of a public prehash entry point. Both lose to
+  quickbloom by ~8× in prehash on the scalar-vs-SIMD bit-test alone.
 
 * **`fastbloom`'s "fastest Bloom in Rust" claim holds Rust-vs-Rust.**
   Against a `wymum`-hashed C SBBF it's ~7–10× slower: SipHash-1-3

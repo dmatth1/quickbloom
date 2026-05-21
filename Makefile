@@ -133,7 +133,13 @@ install: lib
 	install -m 644 quickbloom.h    $(DESTDIR)$(PREFIX)/include/
 	install -m 644 $(LIB_A)        $(DESTDIR)$(PREFIX)/lib/
 	install -m 755 $(LIB_SO_REAL)  $(DESTDIR)$(PREFIX)/lib/
-	install -m 644 $(LIB_PC)       $(DESTDIR)$(PREFIX)/lib/pkgconfig/
+	# Regenerate the pc file with the install-time PREFIX so the
+	# distro/Nix/vcpkg pattern `make && make install PREFIX=...` does
+	# not bake the build-time PREFIX into the installed pkg-config.
+	sed -e 's|@PREFIX@|$(PREFIX)|g' \
+	    -e 's|@VERSION@|$(VERSION)|g' \
+	    quickbloom.pc.in > $(DESTDIR)$(PREFIX)/lib/pkgconfig/quickbloom.pc
+	chmod 644 $(DESTDIR)$(PREFIX)/lib/pkgconfig/quickbloom.pc
 	cd $(DESTDIR)$(PREFIX)/lib && ln -sf libquickbloom.so.$(VERSION)    libquickbloom.so.$(SOVERSION)
 	cd $(DESTDIR)$(PREFIX)/lib && ln -sf libquickbloom.so.$(SOVERSION)  libquickbloom.so
 

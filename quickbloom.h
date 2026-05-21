@@ -85,9 +85,12 @@ size_t qb_estimate_bits(size_t n, double fp);
 //   qb_serialize(p, dst) writes that many bytes to dst (caller-owned;
 //     must be at least qb_serialized_size(p) bytes).
 //   qb_deserialize(bytes, nbytes) builds a filter from the raw bitset
-//     bytes. nbytes must be a multiple of 32 and nbytes/32 must be a
-//     power of two; otherwise returns NULL. The filter takes its own
-//     copy — the input buffer can be freed after the call.
+//     bytes. nbytes must be a multiple of 32, nbytes/32 must be a
+//     power of two, and nbytes must not exceed QB_DESERIALIZE_MAX_BYTES
+//     (default 1 GiB; override at compile time with
+//     -DQB_DESERIALIZE_MAX_BYTES=...); otherwise returns NULL. The
+//     filter takes its own copy — the input buffer can be freed after
+//     the call.
 size_t qb_serialized_size(void* p);
 void   qb_serialize(void* p, uint8_t* dst);
 void*  qb_deserialize(const uint8_t* bytes, size_t nbytes);

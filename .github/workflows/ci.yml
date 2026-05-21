@@ -44,6 +44,9 @@ jobs:
           test -f stage/usr/include/quickbloom.h
           test -f stage/usr/lib/libquickbloom.a
           test -f stage/usr/lib/libquickbloom.so
+          # pc file must carry the install-time PREFIX, not the
+          # build-time one (regression guard for the packager flow).
+          grep -q '^prefix=/usr$' stage/usr/lib/pkgconfig/quickbloom.pc
 
   sanitizers:
     runs-on: ubuntu-latest
@@ -105,6 +108,20 @@ jobs:
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
       - name: run cross-validation
         run: CC=clang python3 test/test_compat_arrow_rs.py
+
+  test-cross-impl:
+    runs-on: ubuntu-latest
+    name: cross-implementation correctness (28 tests)
+    steps:
+      - uses: actions/checkout@v4
+      - name: install clang
+        run: sudo apt-get update && sudo apt-get install -y clang
+      - name: install rust
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - name: run full cross-impl test_bloom.py
+        run: CC=clang python3 test_bloom.py
 
   python-bench-smoke:
     runs-on: ubuntu-latest

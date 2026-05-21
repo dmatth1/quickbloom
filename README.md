@@ -109,9 +109,11 @@ void*  qb_deserialize(const uint8_t* bytes, size_t nbytes);
 
 Built with `-O3 -mavx2 -mbmi2 -mfma -maes`. Runs on any x86_64 with
 AVX2 + BMI2: Intel Haswell (2013)+ or AMD Excavator (2015)+ / Zen
-1–5. AArch64 / Apple Silicon support is not planned — the bitset
-layout is portable but the SIMD mask compute is x86-specific and
-would need a NEON re-derivation.
+1–5. Compiler must be gcc or clang — the 16-byte hash uses
+`__uint128_t` for the 128-bit multiply, which MSVC doesn't accept.
+AArch64 / Apple Silicon support is not planned — the bitset layout
+is portable but the SIMD mask compute is x86-specific and would
+need a NEON re-derivation.
 
 ## Performance
 
