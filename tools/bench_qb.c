@@ -81,6 +81,75 @@ static void print_row(const char* label, stats_t s) {
            label, s.min, s.med, s.p90);
 }
 
+// Bench the single-key path: qb_insert / qb_contains called one key
+// at a time, NO _bulk amortization. This is the latency-bound kernel
+// the README's "fastest single-key SBBF kernel" claim refers to.
+// Comparison candidates' bulk paths are just for-loops over single-
+// key, so measuring single-key here is what makes head-to-head
+// numbers apples-to-apples.
+static void bench_hash_bloom_single(size_t nbits, size_t n_insert, size_t n_query,
+                                    const uint8_t* keys_in, const uint8_t* keys_un,
+                                    stats_t* out_ins, stats_t* out_miss, stats_t* out_hit) {
+    uint64_t ins[REPEATS], miss[REPEATS], hit[REPEATS];
+    size_t sink = 0;
+    for (int r = 0; r < WARMUP + REPEATS; r++) {
+        void* f = qb_new(nbits);
+        if (!f) { perror("qb_new"); exit(1); }
+        uint64_t t0 = now_ns();
+        for (size_t i = 0; i < n_insert; i++)
+            qb_insert(f, keys_in + i * KLEN, KLEN);
+        uint64_t t1 = now_ns();
+        for (size_t i = 0; i < n_query; i++)
+            sink += (size_t)qb_contains(f, keys_un + i * KLEN, KLEN);
+        uint64_t t2 = now_ns();
+        for (size_t i = 0; i < n_insert; i++)
+            sink += (size_t)qb_contains(f, keys_in + i * KLEN, KLEN);
+        uint64_t t3 = now_ns();
+        qb_free(f);
+        if (r >= WARMUP) {
+            int i = r - WARMUP;
+            ins[i]  = t1 - t0;
+            miss[i] = t2 - t1;
+            hit[i]  = t3 - t2;
+        }
+    }
+    if (sink == 0xDEADBEEFDEADBEEFULL) printf("(sink hit; impossible)\n");
+    *out_ins  = summarize(ins,  REPEATS, n_insert);
+    *out_miss = summarize(miss, REPEATS, n_query);
+    *out_hit  = summarize(hit,  REPEATS, n_insert);
+}
+
+static void bench_prehash_single(size_t nbits, size_t n_insert, size_t n_query,
+                                 const uint64_t* hash_in, const uint64_t* hash_un,
+                                 stats_t* out_ins, stats_t* out_miss, stats_t* out_hit) {
+    uint64_t ins[REPEATS], miss[REPEATS], hit[REPEATS];
+    size_t sink = 0;
+    for (int r = 0; r < WARMUP + REPEATS; r++) {
+        void* f = qb_new(nbits);
+        if (!f) { perror("qb_new"); exit(1); }
+        uint64_t t0 = now_ns();
+        for (size_t i = 0; i < n_insert; i++) qb_insert_prehash(f, hash_in[i]);
+        uint64_t t1 = now_ns();
+        for (size_t i = 0; i < n_query; i++)
+            sink += (size_t)qb_contains_prehash(f, hash_un[i]);
+        uint64_t t2 = now_ns();
+        for (size_t i = 0; i < n_insert; i++)
+            sink += (size_t)qb_contains_prehash(f, hash_in[i]);
+        uint64_t t3 = now_ns();
+        qb_free(f);
+        if (r >= WARMUP) {
+            int i = r - WARMUP;
+            ins[i]  = t1 - t0;
+            miss[i] = t2 - t1;
+            hit[i]  = t3 - t2;
+        }
+    }
+    if (sink == 0xDEADBEEFDEADBEEFULL) printf("(sink hit; impossible)\n");
+    *out_ins  = summarize(ins,  REPEATS, n_insert);
+    *out_miss = summarize(miss, REPEATS, n_query);
+    *out_hit  = summarize(hit,  REPEATS, n_insert);
+}
+
 // Bench the hash+bloom path: full qb_*_bulk(bytes, len, n) calls.
 // Each repeat builds a fresh filter so insert isn't measuring an
 // already-populated one. Mirrors harness.py benchmark().
@@ -172,9 +241,23 @@ static void run_size(const char* tag, size_t nbits,
     }
 
     stats_t ins, miss, hit, pins, pmiss, phit;
+    stats_t sins, smiss, shit, spins, spmiss, sphit;
+
+    printf("  -- single-key (qb_insert / qb_contains, one key at a time)\n");
+    bench_hash_bloom_single(nbits, n_insert, n_query, keys_in, keys_un,
+                            &sins, &smiss, &shit);
+    bench_prehash_single   (nbits, n_insert, n_query, hash_in, hash_un,
+                            &spins, &spmiss, &sphit);
+    print_row("insert",         sins);
+    print_row("miss",           smiss);
+    print_row("hit",            shit);
+    print_row("prehash insert", spins);
+    print_row("prehash miss",   spmiss);
+    print_row("prehash hit",    sphit);
+
+    printf("  -- bulk-amortized (qb_*_bulk, 4-way unrolled internally)\n");
     bench_hash_bloom(nbits, n_insert, n_query, keys_in, keys_un,  &ins,  &miss,  &hit);
     bench_prehash   (nbits, n_insert, n_query, hash_in, hash_un, &pins, &pmiss, &phit);
-
     print_row("insert",         ins);
     print_row("miss",           miss);
     print_row("hit",            hit);
