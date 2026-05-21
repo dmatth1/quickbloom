@@ -167,11 +167,12 @@ Where the prehash gap comes from:
 ### Per-key hash cost
 
 16-byte keys, same compile flags as the bloom bench, `make
-bench-hash`: `wymum16` 1.67 ns (quickbloom), `XXH64` 3.60 ns
-(impala, arrow_rs), `SipHash-1-3` 3.40 ns (fastbloom). Add to any
-candidate's prehash number for hash+bloom latency. Real-world
-`fastbloom` overhead is closer to ~15 ns once the Rust `Hasher`
-trait dispatch and per-call seed load are included.
+bench-hash` (median of 5 isolated runs): `wymum16` 1.67 ns
+(quickbloom), `XXH64` 3.50 ns (impala, arrow_rs), `SipHash-1-3`
+3.38 ns (fastbloom). Add to any candidate's prehash number for
+hash+bloom latency. Real-world `fastbloom` overhead is closer to
+~15 ns once the Rust `Hasher` trait dispatch and per-call seed
+load are included.
 
 ## Optimizations we tried and rejected
 
