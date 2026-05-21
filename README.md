@@ -1,8 +1,8 @@
 # quickbloom
 
-Fast Split Block Bloom Filter for x86_64. `wymum` hash + AVX2 mask
-compute, one cache line per probe. The fastest single-key SBBF
-kernel we've measured — see [Performance](#performance).
+Fast Split Block Bloom Filter for x86_64. wyhash-style hash +
+AVX2 mask compute, one cache line per probe. The fastest single-key
+SBBF kernel we've measured — see [Performance](#performance).
 
 Reference Bloom implementations (impala, krassovsky, classic,
 xorfuse, arrow-rs, fastbloom) live in
@@ -52,7 +52,10 @@ Split Block Bloom Filter
 - Spec-mandated salt vector, so the bitset is bit-identical to other
   Parquet SBBF implementations (arrow-cpp, arrow-rs, Velox, DuckDB,
   Impala) for the same 64-bit hash input.
-- Power-of-2 block count with bitmask block-index (no `fastrange`).
+- Power-of-2 block count. The Parquet-mandated fastrange block
+  index `((h >> 32) * nblocks) >> 32` collapses to a single right
+  shift of the upper hash half, so we get spec compliance at the
+  same one-cycle cost as a bitmask.
 - AVX2 SIMD mask compute: `vpmullo` + `vpsrli` + `vpsllv` + `vptest`.
 - 4-way unrolled bulk paths. Insert uses sequential load-or-store per
   key so store-to-load forwarding handles aliased blocks.
@@ -176,7 +179,11 @@ Where the prehash gap comes from:
 16-byte keys, same compile flags as the bloom bench, `make
 bench-hash` (median of 5 isolated runs): `wymum16` 1.67 ns
 (quickbloom), `XXH64` 3.50 ns (impala, arrow_rs), `SipHash-1-3`
-3.38 ns (fastbloom). Add to any candidate's prehash number for
+3.38 ns (fastbloom). Numbers were re-captured on the current host
+after the hash-robustness fix added a pre-multiply XOR pair;
+`wymum16` is ~0.8 ns slower than before the fix, XXH64 sits a bit
+above the prior capture (within typical host-to-host noise), and
+SipHash is unchanged. Add to any candidate's prehash number for
 hash+bloom latency. Real-world `fastbloom` overhead is closer to
 ~15 ns once the Rust `Hasher` trait dispatch and per-call seed
 load are included.
@@ -223,6 +230,15 @@ Correctness (`test_bloom.py` and `diff_test` in the bench):
 - Query separately-seeded unseen keys — FP rate below 0.005.
 - Variable-length keys (1–64 bytes) exercise the `fasthash64_var`
   path on every candidate.
+- Structured-input regression suite (`test/test_quickbloom.c`):
+  sequential u128, padded ASCII, UUIDv4-shaped — catches the
+  zero-input collapse class of hash bugs.
+- Bit-compat cross-validation (`test/test_compat_arrow_rs.py`):
+  feeds the same XXH64 hash to a quickbloom filter (via the
+  prehash API) and the arrow-rs `Sbbf` shim and asserts every
+  probe agrees on a 50k-insert / 100k-query corpus. Verifies the
+  Parquet bit-identical claim against the reference Rust
+  implementation on every CI run.
 
 ## Files
 
@@ -236,7 +252,9 @@ examples/            minimal usage example
 test/                native C correctness tests
 tools/bench_hash.c   per-hash kernel-cost bench (make bench-hash)
 tools/bench_qb.c     native C bench of the qb_* kernels (make bench-qb)
-tools/fuzz_*.c       libFuzzer harnesses (make fuzz; requires clang)
+tools/fuzz_*.c       libFuzzer harnesses, incl. fuzz_deserialize (make fuzz)
+tools/xxh64_helper.c standalone XXH64 .so for the cross-validation test
+test/test_compat_arrow_rs.py   bit-compat cross-validation vs arrow-rs Sbbf
 .github/workflows/   CI: build + test on gcc and clang
 harness.py           compile + diff_test + benchmark infrastructure
 bench_all.py         benchmark sweep across cache regimes; --target-fp / --comparisons

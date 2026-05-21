@@ -259,6 +259,9 @@ static void test_serialize_round_trip(void) {
     ASSERT(qb_deserialize(buf, 0) == NULL,          "deserialize(0 bytes) -> NULL");
     ASSERT(qb_deserialize(buf, 33) == NULL,         "deserialize(non-32-multiple) -> NULL");
     ASSERT(qb_deserialize(buf, 96) == NULL,         "deserialize(3 blocks, non-pow2) -> NULL");
+    // Size cap: a huge nbytes is rejected before we touch posix_memalign.
+    ASSERT(qb_deserialize(buf, (size_t)1 << 40) == NULL,
+           "deserialize rejects nbytes > QB_DESERIALIZE_MAX_BYTES");
 
     free(buf);
     free(buf2);
@@ -278,9 +281,13 @@ static void test_estimate_bits(void) {
     ASSERT(qb_estimate_bits(1000000, 0.001) > qb_estimate_bits(1000000, 0.01),
            "0.1%% FP needs more bits than 1%% FP");
 
+#ifdef NDEBUG
+    // qb_estimate_bits asserts on invalid fp in debug builds; the
+    // conservative fallback below only runs when asserts are off.
     ASSERT(qb_estimate_bits(1000, 0.0)  > 0, "fp=0  doesn't crash");
     ASSERT(qb_estimate_bits(1000, 1.0)  > 0, "fp=1  doesn't crash");
     ASSERT(qb_estimate_bits(1000, -1.0) > 0, "negative fp doesn't crash");
+#endif
 }
 
 int main(void) {

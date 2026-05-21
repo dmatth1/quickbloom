@@ -5,6 +5,9 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  schedule:
+    # Nightly at 07:23 UTC — odd minute to dodge GitHub Actions burst.
+    - cron: '23 7 * * *'
 
 jobs:
   build-test:
@@ -44,27 +47,64 @@ jobs:
 
   sanitizers:
     runs-on: ubuntu-latest
-    name: ASan + UBSan (gcc)
+    strategy:
+      fail-fast: false
+      matrix:
+        cc: [gcc, clang]
+    name: ASan + UBSan (${{ matrix.cc }})
     steps:
       - uses: actions/checkout@v4
+      - name: install clang
+        if: matrix.cc == 'clang'
+        run: sudo apt-get update && sudo apt-get install -y clang
       - name: build + run tests under ASan/UBSan
         run: |
           make clean
           CFLAGS_EXTRA='-fsanitize=address,undefined -fno-sanitize-recover=all -g' \
-            make test CC=gcc
+            make test CC=${{ matrix.cc }}
 
   fuzz-smoke:
     runs-on: ubuntu-latest
-    name: libFuzzer smoke (short run)
+    name: libFuzzer smoke (5 min per harness)
     steps:
       - uses: actions/checkout@v4
       - name: install clang
         run: sudo apt-get update && sudo apt-get install -y clang
-      - name: build + run fuzzers for 30s each
+      - name: build + run fuzzers
         run: |
           make fuzz CC=clang
-          ./build/fuzz_insert       -max_total_time=30 -print_final_stats=1
-          ./build/fuzz_fasthash_var -max_total_time=30 -print_final_stats=1
+          ./build/fuzz_insert        -max_total_time=300 -print_final_stats=1
+          ./build/fuzz_fasthash_var  -max_total_time=300 -print_final_stats=1
+          ./build/fuzz_deserialize   -max_total_time=300 -print_final_stats=1
+
+  fuzz-nightly:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    name: libFuzzer (1 hour per harness, scheduled)
+    steps:
+      - uses: actions/checkout@v4
+      - name: install clang
+        run: sudo apt-get update && sudo apt-get install -y clang
+      - name: build + run fuzzers
+        run: |
+          make fuzz CC=clang
+          ./build/fuzz_insert        -max_total_time=3600 -print_final_stats=1
+          ./build/fuzz_fasthash_var  -max_total_time=3600 -print_final_stats=1
+          ./build/fuzz_deserialize   -max_total_time=3600 -print_final_stats=1
+
+  compat-arrow-rs:
+    runs-on: ubuntu-latest
+    name: arrow-rs bit-identical cross-validation
+    steps:
+      - uses: actions/checkout@v4
+      - name: install clang
+        run: sudo apt-get update && sudo apt-get install -y clang
+      - name: install rust
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - name: run cross-validation
+        run: CC=clang python3 test/test_compat_arrow_rs.py
 
   python-bench-smoke:
     runs-on: ubuntu-latest

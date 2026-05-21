@@ -1,13 +1,17 @@
 // qb_util.c -- helpers exported from libquickbloom.
 
 #include "quickbloom.h"
+#include <assert.h>
 #include <math.h>
 
 size_t qb_estimate_bits(size_t n, double fp) {
     // Smallest meaningful filter is one 256-bit block.
     if (n == 0) return 256;
-    // Sanity-bound: a useless fp argument gets a conservative budget
-    // rather than a panic or a divide-by-zero on the formula below.
+    // Catch the programmer bug in debug builds; release stays
+    // conservative (return n*32) so production callers don't crash
+    // on a stray sentinel value coming out of a config parser.
+    assert(fp > 0.0 && fp < 1.0
+           && "qb_estimate_bits: fp must be strictly between 0 and 1");
     if (!(fp > 0.0) || !(fp < 1.0)) return n * 32;
 
     // Classical Bloom filter bit-budget:

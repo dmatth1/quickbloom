@@ -30,6 +30,7 @@
 // K_HASHES 8 -- documented for bench tooling that scans for this.
 #define K_HASHES 8
 
+#include <assert.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -86,7 +87,8 @@ static inline uint64_t bloom_hash(const void* data, size_t len) {
 
 typedef struct {
     uint32_t* bits;
-    size_t nblocks_mask;
+    size_t   nblocks_mask;   // nblocks - 1 (nblocks is a power of two)
+    uint32_t idx_shift;      // 32 - log2(nblocks); see block_for()
 } bloom_t;
 
 static inline __m256i mask_for(uint32_t h32) {
@@ -101,8 +103,22 @@ static inline __m256i mask_for(uint32_t h32) {
 }
 
 static inline uint32_t* block_for(const bloom_t* b, uint64_t h64) {
-    size_t idx = ((size_t)(h64 >> 32)) & b->nblocks_mask;
+    // Parquet spec: idx = ((h >> 32) * num_blocks) >> 32  (fastrange).
+    // We require num_blocks to be a power of two, so the multiply-and-
+    // shift collapses to a single right shift of the upper 32-bit half
+    // of the hash. Cast through uint64_t so an idx_shift of 32 (which
+    // occurs when nblocks == 1) is well-defined and yields 0 instead
+    // of being UB.
+    uint32_t h32 = (uint32_t)(h64 >> 32);
+    size_t idx = (size_t)(((uint64_t)h32) >> b->idx_shift);
     return b->bits + idx * 8;
+}
+
+// Helper: log2(n) for n a power of two, used to compute idx_shift.
+static inline uint32_t log2_pow2(size_t n) {
+    uint32_t k = 0;
+    while ((((size_t)1) << k) < n) k++;
+    return k;
 }
 
 // qb_new returns NULL on allocation failure. The returned pointer
@@ -127,6 +143,7 @@ void* qb_new(size_t nbits) {
     }
     memset(mem, 0, nbytes);
     b->nblocks_mask = nblocks - 1;
+    b->idx_shift = 32 - log2_pow2(nblocks);
     b->bits = (uint32_t*)mem;
     return b;
 }
@@ -251,45 +268,6 @@ void qb_insert_prehash_bulk(void* p, const uint64_t* hashes, size_t n) {
     for (; i < n; i++) qb_insert_prehash(p, hashes[i]);
 }
 
-// Serialization. The on-disk layout is identical to the in-memory
-// one (nblocks 32-byte blocks of 8 little-endian uint32 lanes), which
-// is also the Parquet spec layout. memcpy on both directions; on
-// non-x86 the load/store macros would need byteswapping, but we're
-// x86-only by build.
-
-size_t qb_serialized_size(void* p) {
-    if (!p) return 0;
-    bloom_t* b = (bloom_t*)p;
-    return (b->nblocks_mask + 1) * SBBF_BLOCK_BYTES;
-}
-
-void qb_serialize(void* p, uint8_t* dst) {
-    if (!p || !dst) return;
-    bloom_t* b = (bloom_t*)p;
-    size_t nbytes = (b->nblocks_mask + 1) * SBBF_BLOCK_BYTES;
-    memcpy(dst, b->bits, nbytes);
-}
-
-void* qb_deserialize(const uint8_t* bytes, size_t nbytes) {
-    if (!bytes) return NULL;
-    if (nbytes == 0 || nbytes % SBBF_BLOCK_BYTES != 0) return NULL;
-    size_t nblocks = nbytes / SBBF_BLOCK_BYTES;
-    // nblocks must be a power of two so the bit-mask index works.
-    if ((nblocks & (nblocks - 1)) != 0) return NULL;
-
-    bloom_t* b = (bloom_t*)malloc(sizeof(bloom_t));
-    if (!b) return NULL;
-    void* mem = NULL;
-    if (posix_memalign(&mem, 32, nbytes) != 0) {
-        free(b);
-        return NULL;
-    }
-    memcpy(mem, bytes, nbytes);
-    b->nblocks_mask = nblocks - 1;
-    b->bits = (uint32_t*)mem;
-    return b;
-}
-
 size_t qb_contains_prehash_bulk(void* p, const uint64_t* hashes, size_t n) {
     bloom_t* b = (bloom_t*)p;
     size_t hits = 0;
@@ -316,4 +294,59 @@ size_t qb_contains_prehash_bulk(void* p, const uint64_t* hashes, size_t n) {
         if (qb_contains_prehash(p, hashes[i])) hits++;
     }
     return hits;
+}
+
+// ---------------------------------------------------------------
+// Serialization. The on-disk layout is identical to the in-memory
+// one (nblocks 32-byte blocks of 8 little-endian uint32 lanes), which
+// is also the Parquet spec layout. memcpy on both directions; on
+// non-x86 the load/store macros would need byteswapping, but we're
+// x86-only by build.
+
+// Maximum nbytes qb_deserialize will accept. Larger inputs are
+// rejected with NULL so an attacker-controlled Parquet bloom header
+// can't trigger a multi-gigabyte posix_memalign. Override at compile
+// time with -DQB_DESERIALIZE_MAX_BYTES=... if you need a larger
+// ceiling. Default 1 GiB.
+#ifndef QB_DESERIALIZE_MAX_BYTES
+#define QB_DESERIALIZE_MAX_BYTES ((size_t)1 << 30)
+#endif
+
+size_t qb_serialized_size(void* p) {
+    assert(p != NULL && "qb_serialized_size: filter pointer must be non-NULL");
+    if (!p) return 0;
+    bloom_t* b = (bloom_t*)p;
+    return (b->nblocks_mask + 1) * SBBF_BLOCK_BYTES;
+}
+
+void qb_serialize(void* p, uint8_t* dst) {
+    assert(p   != NULL && "qb_serialize: filter pointer must be non-NULL");
+    assert(dst != NULL && "qb_serialize: dst buffer must be non-NULL");
+    if (!p || !dst) return;
+    bloom_t* b = (bloom_t*)p;
+    size_t nbytes = (b->nblocks_mask + 1) * SBBF_BLOCK_BYTES;
+    memcpy(dst, b->bits, nbytes);
+}
+
+void* qb_deserialize(const uint8_t* bytes, size_t nbytes) {
+    if (!bytes) return NULL;
+    if (nbytes == 0 || nbytes > QB_DESERIALIZE_MAX_BYTES) return NULL;
+    if (nbytes % SBBF_BLOCK_BYTES != 0) return NULL;
+    size_t nblocks = nbytes / SBBF_BLOCK_BYTES;
+    // nblocks must be a power of two so the fastrange index reduces
+    // to a shift (matches the qb_new layout).
+    if ((nblocks & (nblocks - 1)) != 0) return NULL;
+
+    bloom_t* b = (bloom_t*)malloc(sizeof(bloom_t));
+    if (!b) return NULL;
+    void* mem = NULL;
+    if (posix_memalign(&mem, 32, nbytes) != 0) {
+        free(b);
+        return NULL;
+    }
+    memcpy(mem, bytes, nbytes);
+    b->nblocks_mask = nblocks - 1;
+    b->idx_shift = 32 - log2_pow2(nblocks);
+    b->bits = (uint32_t*)mem;
+    return b;
 }

@@ -121,7 +121,10 @@ $(BUILD)/fuzz_insert: tools/fuzz_insert.c quickbloom.c qb_util.c quickbloom.h | 
 $(BUILD)/fuzz_fasthash_var: tools/fuzz_fasthash_var.c quickbloom.c qb_util.c quickbloom.h | $(BUILD)
 	$(CC) $(FUZZ_CFLAGS) -I. -o $@ tools/fuzz_fasthash_var.c quickbloom.c qb_util.c -lm
 
-fuzz: $(BUILD)/fuzz_insert $(BUILD)/fuzz_fasthash_var
+$(BUILD)/fuzz_deserialize: tools/fuzz_deserialize.c quickbloom.c qb_util.c quickbloom.h | $(BUILD)
+	$(CC) $(FUZZ_CFLAGS) -I. -o $@ tools/fuzz_deserialize.c quickbloom.c qb_util.c -lm
+
+fuzz: $(BUILD)/fuzz_insert $(BUILD)/fuzz_fasthash_var $(BUILD)/fuzz_deserialize
 
 install: lib
 	install -d $(DESTDIR)$(PREFIX)/include
