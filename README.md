@@ -10,14 +10,11 @@ xorfuse, arrow-rs, fastbloom) live in
 
 ## Quick start
 
-### Use it in your project
-
 ```sh
 git clone https://github.com/dmatth1/quickbloom
 cd quickbloom
-make             # builds build/libquickbloom.{a,so}
-sudo make install            # installs to /usr/local by default
-                             # override with PREFIX=/your/path
+make                # build/libquickbloom.{a,so}
+sudo make install   # /usr/local by default; override with PREFIX=
 ```
 
 ```c
@@ -29,19 +26,19 @@ if (qb_contains(f, "hello", 5)) { /* probably present */ }
 qb_free(f);
 ```
 
-Link with `-lquickbloom -lm` (or use pkg-config: `pkg-config --cflags
---libs quickbloom`). See `examples/hello_quickbloom.c` for a complete
-runnable example (`make example && ./build/hello_quickbloom`).
+Link with `-lquickbloom -lm`, or use `pkg-config --cflags --libs
+quickbloom`. `examples/hello_quickbloom.c` is the full runnable
+version (`make example`).
 
-### Run the benchmarks and tests
+Tests and benches:
 
 ```sh
-make test                                       # native C correctness tests
-CC=clang python3 bench_all.py                   # full Python bench sweep
-CC=clang python3 bench_all.py --comparisons     # include reference impls
-CC=clang python3 bench_all.py --sizes S,XL      # just the endpoints
-CC=clang python3 bench_all.py --target-fp 0.001 # equal-FP comparison
-python3 test_bloom.py                           # Python correctness tests
+make test                                        # native C tests
+python3 test_bloom.py                            # Python tests (incl. comparisons)
+CC=clang python3 bench_all.py --comparisons      # bench sweep, all candidates
+CC=clang python3 bench_all.py --sizes S,M        # subset
+CC=clang python3 bench_all.py --target-fp 0.001  # equal-FP sizing
+make bench-hash                                  # per-hash kernel cost
 ```
 
 ## Algorithm
@@ -57,10 +54,9 @@ Split Block Bloom Filter
 - Power-of-2 block count with bitmask block-index (no `fastrange`).
 - AVX2 SIMD mask compute: `vpmullo` + `vpsrli` + `vpsllv` + `vptest`.
 - 4-way unrolled bulk paths. Insert uses sequential load-or-store per
-  key so store-to-load forwarding handles aliased blocks correctly.
-
-Hash is `wymum` — one 128-bit multiply on the 16-byte fast path — with
-a `fasthash64` fallback for variable-length keys.
+  key so store-to-load forwarding handles aliased blocks.
+- Hash is `wymum` (one 128-bit multiply) on the 16-byte fast path,
+  `fasthash64` for variable-length keys.
 
 ## ABI
 
@@ -75,11 +71,11 @@ void   qb_free(void* p);
 void   qb_insert(void* p, const void* key, size_t len);
 int    qb_contains(void* p, const void* key, size_t len);
 
-// Bulk API. Returns the number of hits.
+// Bulk API. qb_contains_bulk returns the number of hits.
 void   qb_insert_bulk(void* p, const uint8_t* keys, size_t klen, size_t n);
 size_t qb_contains_bulk(void* p, const uint8_t* keys, size_t klen, size_t n);
 
-// Pre-hashed (for callers that already have a 64-bit hash of the key).
+// Pre-hashed (skip the built-in wymum step).
 void   qb_insert_prehash(void* p, uint64_t hash);
 int    qb_contains_prehash(void* p, uint64_t hash);
 void   qb_insert_prehash_bulk(void* p, const uint64_t* hashes, size_t n);
@@ -98,38 +94,32 @@ size_t qb_estimate_bits(size_t n, double fp);
 - Reads concurrent with writes may see partial state but never a false
   negative once the write completes.
 
-## Build target & CPU coverage
+## Build target
 
-Compile flags: `-O3 -mavx2 -mbmi2 -mfma -maes -fPIC -shared`.
-
-Runs on any x86_64 with AVX2 + BMI2:
-
-- **Intel** — Haswell (2013) and later.
-- **AMD** — Excavator (2015) and later, then Zen 1–5.
+Built with `-O3 -mavx2 -mbmi2 -mfma -maes`. Runs on any x86_64 with
+AVX2 + BMI2: Intel Haswell (2013)+ or AMD Excavator (2015)+ / Zen
+1–5.
 
 ## Performance
 
-> Numbers are illustrative and **host-dependent**. Run `make bench` on
-> your hardware. Captured here on Intel Xeon @ 2.8 GHz (Cascade Lake-
-> class, 33 MB L3), clang -O3, contains-miss, min ns/op.
+> Numbers are illustrative and **host-dependent**. Run `make bench`
+> on your hardware. Captured on Intel Xeon @ 2.8 GHz (Cascade
+> Lake-class, 33 MB L3), clang -O3, contains-miss, min ns/op.
 
 ### quickbloom
 
-| Size           | hash+bloom miss | prehash miss |
-|----------------|----------------:|-------------:|
-| S (128 KB, in L2) | 1.95         | 1.44         |
-| M (2 MB, in L3)   | 9.28         | 5.01         |
-| L (32 MB, around L3) | 16.09     | 12.04        |
+| Size                 | hash+bloom | prehash |
+|----------------------|-----------:|--------:|
+| S (128 KB, in L2)    |       1.95 |    1.44 |
+| M (2 MB, in L3)      |       9.28 |    5.01 |
+| L (32 MB, around L3) |      16.09 |   12.04 |
 
-Hash+bloom is what a user calling `qb_contains(bytes, len)` pays end
-to end (`wymum` hash + SBBF probe). Prehash is the kernel cost alone,
-for callers passing pre-computed `uint64` hashes via
-`qb_contains_prehash`.
+Hash+bloom is the full `qb_contains(bytes, len)` path. Prehash is
+the kernel alone, for callers using `qb_contains_prehash(uint64)`.
 
-### Comparison vs other libraries
+### Comparison
 
-Same prehash metric, so we're comparing probe kernels (hashing
-factored out on both sides):
+Prehash mode, so probe kernels only:
 
 | Implementation         | K | S       | M       | L       | FP rate |
 |------------------------|---|--------:|--------:|--------:|--------:|
@@ -141,44 +131,37 @@ factored out on both sides):
 | `fastbloom` (Rust)     | 8 |   10.65 |   17.12 |    37.10| 0.00006 |
 | `arrow_rs` SBBF ²      | 8 |       — |       — |        —| 0.00030 |
 
-¹ **`krassovsky` (Save Buffer `PatternedSimd`) isn't directly
-comparable.** It's a batched-only design — every `contains` issues a
-`vpgatherqq` that loads 4 blocks per instruction, with no
-comparably-tuned single-key path. The numbers above are measured
-through its 8-way `bloom_*_batch8_bulk` entry points; for per-key
-workloads (the common case for caches, point lookups, streaming
-dedup) the design doesn't apply. K=5 also means ~10× higher FP than
+¹ `krassovsky` isn't directly comparable: it's a batched-only
+design (`vpgatherqq` loads 4 blocks per instruction; no
+comparably-tuned single-key path). The numbers above are measured
+through its 8-way `bloom_*_batch8_bulk` entry points. For per-key
+workloads it doesn't apply. K=5 also gives ~10× higher FP than
 quickbloom at equal sizing.
 
-² `arrow_rs` (the parquet crate) exposes no `insert_hash` /
-`check_hash`. Its hash+bloom numbers are 21.52 / 29.18 / 74.65 ns at
-S/M/L; structurally it's the same algorithm as `impala` (SBBF +
-XXH64), and its kernel would land near `impala`'s.
+² `arrow_rs` (parquet crate) exposes no `insert_hash` /
+`check_hash`. Hash+bloom numbers are 21.52 / 29.18 / 74.65 ns at
+S/M/L; structurally the same SBBF + XXH64 as `impala`, so the
+kernel would land near `impala`'s.
+
+Where the prehash gap comes from:
+
+- Vs `classic`: SBBF reads one cache line; `classic` does K=8
+  scattered probes.
+- Vs `impala` / `arrow_rs`: same SBBF block geometry, but scalar
+  bit-test vs SIMD `vpmullo` + `vpsllv` + `_mm256_testc_si256`.
+- Vs `fastbloom`: non-SBBF multi-block layout touches more memory
+  per probe.
+- Vs `xorfuse`: different class — static set, ~9 bits/key, 3 cache
+  lines per probe. Loses on latency, wins on memory.
 
 ### Per-key hash cost
 
-Kernel cost on 16-byte keys, same compile flags as the bloom bench
-(reproduce with `make bench-hash`): `wymum16` 0.90 ns/op
-(quickbloom), `XXH64` 2.80 ns/op (impala, arrow_rs), `SipHash-1-3`
-3.40 ns/op (fastbloom). Lets you reconstruct any candidate's
-hash+bloom from its prehash number. Real-world `fastbloom`
-end-to-end hash overhead is closer to ~15 ns because the Rust
-`Hasher` trait adds per-call dispatch and the seed is loaded from
-filter state on every call.
-
-### Where the prehash gap comes from
-
-- Vs `classic`: SBBF probes one cache line; `classic` does K=8
-  scattered probes.
-- Vs `impala` / `arrow_rs`: same SBBF block geometry, but scalar
-  bit-test vs SIMD mask compute (`vpmullo` + `vpsllv` +
-  `_mm256_testc_si256`).
-- Vs `fastbloom`: a non-SBBF multi-block layout that touches more
-  memory per probe than a 256-bit SBBF block.
-- Vs `xorfuse`: different class (static set, ~9 bits/key, 3 cache
-  lines per probe). Loses on probe latency, wins on memory.
-
-Reproduce: `CC=clang python3 bench_all.py --sizes S,M,L --comparisons`.
+16-byte keys, same compile flags as the bloom bench, `make
+bench-hash`: `wymum16` 0.90 ns (quickbloom), `XXH64` 2.80 ns
+(impala, arrow_rs), `SipHash-1-3` 3.40 ns (fastbloom). Add to any
+candidate's prehash number for hash+bloom latency. Real-world
+`fastbloom` overhead is closer to ~15 ns once the Rust `Hasher`
+trait dispatch and per-call seed load are included.
 
 ## Optimizations we tried and rejected
 
@@ -196,23 +179,23 @@ Reproduce: `CC=clang python3 bench_all.py --sizes S,M,L --comparisons`.
 
 ## Methodology
 
-The harness:
+Bench harness:
 
-- **Two timing modes**: hash+bloom (user-visible) and prehash (algorithm
-  only, comparable to published cyc/op).
-- **Four sizes** (`S/M/L/XL`) spanning L2 → DRAM.
-- **Random 16-byte keys**, deterministic across runs (SHA-256 of an
+- Four sizes (`S/M/L/XL`) spanning L2 → DRAM. Default sweep is
+  `S,M,L`; `XL` (512 MB filter, ~50M items) needs `--sizes` and
+  ~1 GB RAM.
+- Random 16-byte keys, deterministic across runs (SHA-256 of an
   index, truncated). Separate seeds for inserted vs unseen sets.
-- **Repeats with warmup**; reports min/median/p90. `min` is the
+- Repeats with warmup; reports min/median/p90. `min` is the
   headline (most reproducible).
-- **CPU/compiler detected** and printed in the bench header.
+- CPU and compiler are detected and printed in the bench header.
 
 Correctness (`test_bloom.py` and `diff_test` in the bench):
 
-- Insert `n_insert` keys, query them all back — zero false negatives.
-- Query `n_query` separately-seeded unseen keys — FP rate below 0.005.
-- Variable-length keys (1–64 bytes, deterministic) exercise the
-  `fasthash64_var` path in every candidate.
+- Insert N keys, query them all back — zero false negatives.
+- Query separately-seeded unseen keys — FP rate below 0.005.
+- Variable-length keys (1–64 bytes) exercise the `fasthash64_var`
+  path on every candidate.
 
 ## Files
 
@@ -233,18 +216,12 @@ comparisons/         reference Bloom implementations (impala, krassovsky, classi
                      xorfuse, fastbloom, arrow-rs) plus their own README
 ```
 
-The shared library follows Linux SONAME convention:
-`libquickbloom.so.0.1.0` is the real file, `libquickbloom.so.0` is the
-SONAME (ABI generation) symlink, `libquickbloom.so` is the linker
-name. A `quickbloom.pc` pkg-config file is installed alongside.
-
 ## Versioning
 
-Current release: `0.1.0`. Version macros are exposed in `quickbloom.h`
-(`QUICKBLOOM_VERSION_{MAJOR,MINOR,PATCH}`, `QUICKBLOOM_VERSION_STRING`).
-We follow semantic versioning for the C ABI declared in `quickbloom.h`:
-breaking changes bump major, additive changes bump minor, fixes bump
-patch.
+`0.1.0`. Semver on the C ABI in `quickbloom.h`; version macros
+`QUICKBLOOM_VERSION_{MAJOR,MINOR,PATCH,STRING}` are exposed there.
+Shared library uses standard SONAME (`libquickbloom.so.0` →
+`libquickbloom.so.0.1.0`); `quickbloom.pc` ships for `pkg-config`.
 
 ## License
 
