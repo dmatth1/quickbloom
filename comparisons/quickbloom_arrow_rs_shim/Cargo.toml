@@ -10,8 +10,12 @@ crate-type = ["cdylib"]
 # Same XXH64 hash as arrow-rs's Sbbf, so the head-to-head measures
 # *algorithm + SIMD*, not hash. Direct dep on twox-hash to keep the
 # shim small and not pull in all of arrow-rs.
+# Pinned to 2.x to get the same XxHash64::oneshot path arrow-rs uses
+# internally for Sbbf. Earlier this pinned 1.6 (streaming Hasher API
+# only) and the streaming API was ~5x slower than the oneshot — that
+# tax dominated the per-probe time and hid most of the SIMD win.
 [dependencies]
-twox-hash = { version = "1.6", default-features = false }
+twox-hash = { version = "2", default-features = false, features = ["xxhash64"] }
 
 [profile.release]
 opt-level = 3
