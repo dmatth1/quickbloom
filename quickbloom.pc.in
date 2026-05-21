@@ -4,7 +4,7 @@ includedir=${prefix}/include
 libdir=${exec_prefix}/lib
 
 Name: quickbloom
-Description: Fast Bloom filter implementations for x86_64 (SBBF, AVX2)
+Description: Fast Split Block Bloom Filter for x86_64 (AVX2)
 URL: https://github.com/dmatth1/quickbloom
 Version: @VERSION@
 Libs: -L${libdir} -lquickbloom

@@ -39,6 +39,7 @@ CC=clang python3 bench_all.py --comparisons      # bench sweep, all candidates
 CC=clang python3 bench_all.py --sizes S,M        # subset
 CC=clang python3 bench_all.py --target-fp 0.001  # equal-FP sizing
 make bench-hash                                  # per-hash kernel cost
+make bench-qb                                    # native C bench of the qb_* kernels
 ```
 
 ## Algorithm
@@ -84,6 +85,12 @@ size_t qb_contains_prehash_bulk(void* p, const uint64_t* hashes, size_t n);
 
 // Sizing helper. Returns recommended bit count for ~n items at FP rate fp.
 size_t qb_estimate_bits(size_t n, double fp);
+
+// Serialization. Raw bitset bytes, bit-identical to the Parquet
+// on-disk layout (arrow-rs / arrow-cpp / Velox / DuckDB / Impala).
+size_t qb_serialized_size(void* p);
+void   qb_serialize(void* p, uint8_t* dst);
+void*  qb_deserialize(const uint8_t* bytes, size_t nbytes);
 ```
 
 ### Thread safety

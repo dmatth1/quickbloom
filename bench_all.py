@@ -16,7 +16,7 @@ Two sizing modes:
     FP = X".
 
 Usage:
-    python3 bench_all.py                       # the 3 top-level designs
+    python3 bench_all.py                       # quickbloom only
     python3 bench_all.py --comparisons         # also include comparisons/*.c
     python3 bench_all.py --sizes S,XL          # subset of sizes
     python3 bench_all.py --no-prehash          # skip the prehash bench

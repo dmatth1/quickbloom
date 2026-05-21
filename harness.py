@@ -1,6 +1,6 @@
 """Compile, correctness-test, and benchmark Bloom filter candidates.
 
-Methodology (see also README.md and docs/METHODOLOGY.md):
+Methodology (see also the Methodology section of README.md):
 
 * Single-key API. We measure bulk_insert / bulk_contains, but those iterate
   over individual keys internally -- this is single-key throughput, not
@@ -31,10 +31,9 @@ from pathlib import Path
 
 import os
 
-# Default compiler: respect CC env var, else gcc for reproducibility.
-# Set CC=clang to use clang -- on Sapphire Rapids, clang is ~16% faster
-# on the prehash bloom kernel (and ~5-10% on hash+bloom contains) for
-# the v14 frontier. See docs/METHODOLOGY.md for compiler comparison.
+# Default compiler: respect CC env var, else the system cc. Set
+# CC=clang on Sapphire Rapids+ for a few percent on the bloom kernel;
+# the bench header records which compiler was used.
 CC = os.environ.get("CC", "cc")
 
 CFLAGS = [
