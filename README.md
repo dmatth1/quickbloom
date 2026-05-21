@@ -107,11 +107,6 @@ Runs on any x86_64 with AVX2 + BMI2:
 - **Intel** — Haswell (2013) and later.
 - **AMD** — Excavator (2015) and later, then Zen 1–5.
 
-One `.so` covers 10+ years of x86_64. AVX2-only by design: on Sapphire
-Rapids the AVX-512 frequency throttle exceeds the width win on this
-workload, and Intel consumer chips (Alder/Raptor/Meteor) don't have
-AVX-512 anyway.
-
 ## Performance
 
 > Numbers are illustrative and **host-dependent**. Run `make bench` on
