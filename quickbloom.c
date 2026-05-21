@@ -6,9 +6,10 @@
 //
 // Split Block Bloom Filter (Apache Parquet spec):
 //   - 256-bit blocks (8 x 32-bit words), K=8 (one bit per word)
-//   - wymum hash (single 128-bit multiply) on 16-byte fast path,
-//     fasthash64 fallback for variable-length keys
-//   - Power-of-2 nblocks with bitmask block-index (no fastrange)
+//   - wyhash-style hash (128-bit multiply + xor-fold) on 16-byte
+//     fast path, fasthash64 fallback for variable-length keys
+//   - Power-of-2 nblocks with the Parquet-spec fastrange block
+//     index, which on pow2 reduces to a single right shift
 //   - AVX2 SIMD mask compute (vpmullo + vpsrli + vpsllv)
 //   - 4-way unrolled bulk paths
 //   - bulk_insert uses sequential load+OR+store per key so hardware

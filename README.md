@@ -127,9 +127,9 @@ Native C bench (`make bench-qb`), min ns/op across isolated runs:
 
 | Size                 | hash+bloom | prehash |
 |----------------------|-----------:|--------:|
-| S (128 KB)           |       2.34 |    1.43 |
-| M (2 MB)             |       7.57 |    2.87 |
-| L (32 MB)            |      18.36 |   12.59 |
+| S (128 KB)           |       2.29 |    1.37 |
+| M (2 MB)             |       5.73 |    2.70 |
+| L (32 MB)            |      18.61 |   11.66 |
 
 Hash+bloom is the full `qb_contains(bytes, len)` path. Prehash is
 the kernel alone, for callers using `qb_contains_prehash(uint64)`.
@@ -143,7 +143,7 @@ Prehash mode, so probe kernels only:
 
 | Implementation         | K | S       | M       | L       | FP rate |
 |------------------------|---|--------:|--------:|--------:|--------:|
-| **quickbloom**         | 8 | **1.43**| **2.87**| **12.59**| 0.00037 |
+| **quickbloom**         | 8 | **1.37**| **2.70**| **11.66**| 0.00037 |
 | `xorfuse` (binary fuse)| 3 |    4.52 |    8.49 |    25.24| 0.00394 |
 | `krassovsky` ¹         | 5 |    4.96 |    7.11 |    25.15| 0.00353 |
 | `classic`              | 8 |    8.57 |   12.74 |    32.11| 0.00013 |
@@ -200,6 +200,7 @@ load are included.
 | Insert-side collision skip | slightly slower | branch mispredict cost > dup-work savings on random keys |
 | 4-way unroll w/ batched store on insert | 16 false negatives | aliased blocks need serialized L+O+S per key for store-load forwarding |
 | Shift-based mask compute (skip xor-fold) | failed FP test | low bits of `r.lo` from a 64×64→128 multiply have weak diffusion |
+| Bitmask block-index (skip fastrange) | failed bit-compat | `h & mask` reads the low bits of `h32`; Parquet's fastrange `(h32 * nblocks) >> 32` reads the high bits, so bitsets diverged from arrow-rs / arrow-cpp / Velox / DuckDB / Impala. Fastrange on power-of-2 nblocks collapses to a single right shift — same one-cycle cost, spec-compliant. |
 | PGO (clang -fprofile-use) | <2% | code is mostly loop-free SIMD; PGO mostly helps branchy code |
 
 ## Methodology

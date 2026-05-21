@@ -11,7 +11,7 @@ crate-type = ["cdylib"]
 # its bloom_filter module. default-features disable trims out compression
 # codecs, Arrow integration, async, etc. — we just need the SBBF type.
 [dependencies]
-parquet = { version = "*", default-features = false }
+parquet = { version = "58", default-features = false }
 
 [profile.release]
 opt-level = 3
