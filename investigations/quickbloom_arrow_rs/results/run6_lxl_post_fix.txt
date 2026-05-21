@@ -1,0 +1,12 @@
+# Bloom filter benchmark
+# CPU:    Intel(R) Xeon(R) Processor @ 2.10GHz  @ 2100 MHz
+# Cache:  L1d 192 KB / L2 8192 KB / L3 260 MB
+# Build:  clang -O3 -mavx2 -mbmi2 -mfma -maes
+# Stats:  min/median/p90 ns/op (lower is better)
+
+## Size L: n_insert=12,500,000  n_query=500,000  nbits=268,435,456 (32 MB, fixed)
+
+candidate            K  bits/key      size             insert               miss                hit              pre.ins           pre.miss            pre.hit         fp     theo
+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+single_key           8      21.5   32.0 MB   6.39/ 6.61/ 7.13   6.99/ 7.15/ 7.33   5.99/ 6.45/ 7.02     5.85/ 6.07/ 6.18   5.23/ 5.34/ 5.40   4.81/ 4.91/ 5.01    0.00030  0.00009
+unified              8      21.5   32.0 MB   5.84/ 6.21/ 6.36   6.62/ 7.53/ 8.26   5.63/ 6.22/ 6.66     5.74/ 5.84/ 6.09   5.19/ 5.71/ 6.06   5.04/ 5.25/ 5.57    0.00030  0.00009
