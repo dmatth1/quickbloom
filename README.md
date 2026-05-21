@@ -113,11 +113,13 @@ would need a NEON re-derivation.
 
 ### quickbloom
 
+Native C bench (`make bench-qb`), min ns/op across isolated runs:
+
 | Size                 | hash+bloom | prehash |
 |----------------------|-----------:|--------:|
-| S (128 KB)           |       1.95 |    1.44 |
-| M (2 MB)             |       9.28 |    5.01 |
-| L (32 MB)            |      16.09 |   12.04 |
+| S (128 KB)           |       2.34 |    1.43 |
+| M (2 MB)             |       7.57 |    2.87 |
+| L (32 MB)            |      18.36 |   12.59 |
 
 Hash+bloom is the full `qb_contains(bytes, len)` path. Prehash is
 the kernel alone, for callers using `qb_contains_prehash(uint64)`.
@@ -131,13 +133,13 @@ Prehash mode, so probe kernels only:
 
 | Implementation         | K | S       | M       | L       | FP rate |
 |------------------------|---|--------:|--------:|--------:|--------:|
-| **quickbloom**         | 8 | **1.44**| **5.01**| **12.04**| 0.00030 |
-| `xorfuse` (binary fuse)| 3 |    4.52 |    7.38 |    23.53| 0.00422 |
-| `krassovsky` ¹         | 5 |    4.85 |    7.66 |    15.79| 0.00340 |
-| `classic`              | 8 |    8.41 |   13.07 |    23.45| 0.00013 |
-| `impala`               | 8 |    8.54 |   10.96 |    19.87| 0.00030 |
-| `fastbloom` (Rust)     | 8 |   10.65 |   17.12 |    37.10| 0.00006 |
-| `arrow_rs` SBBF ²      | 8 |       — |       — |        —| 0.00030 |
+| **quickbloom**         | 8 | **1.43**| **2.87**| **12.59**| 0.00037 |
+| `xorfuse` (binary fuse)| 3 |    4.52 |    8.49 |    25.24| 0.00394 |
+| `krassovsky` ¹         | 5 |    4.96 |    7.11 |    25.15| 0.00353 |
+| `classic`              | 8 |    8.57 |   12.74 |    32.11| 0.00013 |
+| `impala`               | 8 |    8.63 |   11.11 |    24.18| 0.00032 |
+| `fastbloom` (Rust)     | 8 |   10.57 |   17.30 |    44.34| 0.00011 |
+| `arrow_rs` SBBF ²      | 8 |       — |       — |        —| 0.00032 |
 
 ¹ `krassovsky` isn't directly comparable: it's a batched-only
 design (`vpgatherqq` loads 4 blocks per instruction; no
@@ -147,7 +149,7 @@ workloads it doesn't apply. K=5 also gives ~10× higher FP than
 quickbloom at equal sizing.
 
 ² `arrow_rs` (parquet crate) exposes no `insert_hash` /
-`check_hash`. Hash+bloom numbers are 21.52 / 29.18 / 74.65 ns at
+`check_hash`. Hash+bloom numbers are 21.40 / 29.16 / 75.43 ns at
 S/M/L; structurally the same SBBF + XXH64 as `impala`, so the
 kernel would land near `impala`'s.
 
@@ -165,7 +167,7 @@ Where the prehash gap comes from:
 ### Per-key hash cost
 
 16-byte keys, same compile flags as the bloom bench, `make
-bench-hash`: `wymum16` 0.90 ns (quickbloom), `XXH64` 2.80 ns
+bench-hash`: `wymum16` 1.67 ns (quickbloom), `XXH64` 3.60 ns
 (impala, arrow_rs), `SipHash-1-3` 3.40 ns (fastbloom). Add to any
 candidate's prehash number for hash+bloom latency. Real-world
 `fastbloom` overhead is closer to ~15 ns once the Rust `Hasher`
@@ -189,14 +191,23 @@ trait dispatch and per-call seed load are included.
 
 Bench harness:
 
-- Four sizes (`S/M/L/XL`) spanning L2 → DRAM. Default sweep is
-  `S,M,L`; `XL` (512 MB filter, ~50M items) needs `--sizes` and
-  ~1 GB RAM.
+- Four sizes (`S/M/L/XL`) spanning L2 → DRAM, derived from the
+  host's L2-per-core and L3 sizes at runtime (read from
+  `/sys/devices/system/cpu/cpu0/cache/`; override with
+  `QB_L2_KB` / `QB_L3_MB` env vars). Default sweep is `S,M,L`;
+  `XL` needs `--sizes` and ~1 GB RAM.
 - Random 16-byte keys, deterministic across runs (SHA-256 of an
   index, truncated). Separate seeds for inserted vs unseen sets.
 - Repeats with warmup; reports min/median/p90. `min` is the
   headline (most reproducible).
-- CPU and compiler are detected and printed in the bench header.
+- CPU, caches, and compiler are detected and printed in the
+  bench header.
+- The headline quickbloom numbers come from `make bench-qb`, a
+  native C bench that times via `clock_gettime` inside the C
+  binary (no ctypes boundary). The Python harness (`make bench`,
+  `bench_all.py`) is the cross-candidate sweep and is what the
+  comparison table uses; FFI overhead per bulk call is amortized
+  over the call's n_keys and is below measurement noise.
 
 Correctness (`test_bloom.py` and `diff_test` in the bench):
 
@@ -216,6 +227,8 @@ quickbloom.pc.in     pkg-config template; installed as quickbloom.pc
 examples/            minimal usage example
 test/                native C correctness tests
 tools/bench_hash.c   per-hash kernel-cost bench (make bench-hash)
+tools/bench_qb.c     native C bench of the qb_* kernels (make bench-qb)
+tools/fuzz_*.c       libFuzzer harnesses (make fuzz; requires clang)
 .github/workflows/   CI: build + test on gcc and clang
 harness.py           compile + diff_test + benchmark infrastructure
 bench_all.py         benchmark sweep across cache regimes; --target-fp / --comparisons

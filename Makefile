@@ -7,6 +7,7 @@
 #   make example    -- build the hello_quickbloom example
 #   make bench      -- run the Python benchmark sweep
 #   make bench-hash -- per-hash kernel cost (wymum / XXH64 / SipHash-1-3)
+#   make bench-qb   -- native C bench of the qb_* kernels (no ctypes overhead)
 #   make install    -- install header + libs + pkg-config to $(PREFIX) (default /usr/local)
 #   make clean      -- remove build artefacts
 #
@@ -40,7 +41,7 @@ LIB_SO      := $(BUILD)/libquickbloom.so
 LIB_A       := $(BUILD)/libquickbloom.a
 LIB_PC      := $(BUILD)/quickbloom.pc
 
-.PHONY: all lib test example bench bench-hash fuzz install clean
+.PHONY: all lib test example bench bench-hash bench-qb fuzz install clean
 
 all: lib
 
@@ -98,6 +99,14 @@ $(BUILD)/bench_hash: tools/bench_hash.c | $(BUILD)
 	$(CC) $(CFLAGS) -o $@ tools/bench_hash.c
 
 bench-hash: $(BUILD)/bench_hash
+	$<
+
+# Native C bench of the qb_* kernels. Links against the static library
+# so timings reflect the same -O3 inlining a downstream user gets.
+$(BUILD)/bench_qb: tools/bench_qb.c $(LIB_A) quickbloom.h | $(BUILD)
+	$(CC) $(CFLAGS) -I. -o $@ tools/bench_qb.c $(LIB_A) -lm
+
+bench-qb: $(BUILD)/bench_qb
 	$<
 
 # libFuzzer harnesses. Require clang. Build the library with the
