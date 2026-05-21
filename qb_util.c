@@ -1,4 +1,4 @@
-// qb_util.c -- variant-agnostic helpers exported from libquickbloom.
+// qb_util.c -- helpers exported from libquickbloom.
 
 #include "quickbloom.h"
 #include <math.h>

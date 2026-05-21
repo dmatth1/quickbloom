@@ -102,35 +102,27 @@ def parse_k_hashes(source: str) -> int:
 CFLAGS_AVX512 = ["-mavx512f", "-mavx512dq", "-mavx512bw", "-mavx512vl"]
 
 
-# Map of variant entry-point filenames to their QB_NS namespace prefix.
-# All other .c files (the comparison implementations in comparisons/)
-# still export the legacy `bloom_*` symbols.
-QB_VARIANT_PREFIX = {
-    "bloom_single_key": "qb_single_key",
-    "bloom_unified":    "qb_unified",
-    "bloom_batched":    "qb_batched",
-}
+# Filenames whose .c file produces qb_* symbols (the quickbloom
+# library). Comparison candidates in comparisons/ keep the legacy
+# bloom_* symbol names.
+QB_CANDIDATES = {"quickbloom"}
 
 
-def _alias_qb_to_bloom(lib: ctypes.CDLL, prefix: str) -> None:
-    """For quickbloom variants, alias the namespaced public symbols to the
-    legacy `bloom_*` names on the loaded lib so the rest of the harness
-    keeps working unchanged. The .so itself exports only the namespaced
-    names; the alias lives only on the Python wrapper object."""
+def _alias_qb_to_bloom(lib: ctypes.CDLL) -> None:
+    """Quickbloom exports qb_* symbols; the rest of the harness still
+    addresses functions by their legacy `bloom_*` names. Alias on the
+    Python wrapper so downstream harness code keeps working."""
     names = [
         "new", "free", "insert", "contains",
         "insert_bulk", "contains_bulk",
         "insert_prehash", "contains_prehash",
         "insert_prehash_bulk", "contains_prehash_bulk",
-        "insert_batch8", "contains_batch8",
-        "insert_batch8_bulk", "contains_batch8_bulk",
     ]
     for fname in names:
-        qb_name = f"{prefix}_{fname}"
         try:
-            fn = getattr(lib, qb_name)
+            fn = getattr(lib, f"qb_{fname}")
         except AttributeError:
-            continue  # optional symbol (e.g. batch8 on non-batched variants)
+            continue
         setattr(lib, f"bloom_{fname}", fn)
 
 
@@ -180,19 +172,16 @@ def compile_candidate(c_path: Path, out_dir: Path) -> Candidate:
     if c_path.is_dir() and (c_path / "Cargo.toml").is_file():
         so = _build_rust_crate(c_path)
         source_path = c_path / "src" / "lib.rs"
-        prefix = None  # Rust shims export bloom_* directly
+        is_qb = False
     else:
         so = out_dir / (c_path.stem + ".so")
         # Files with "_avx512" in their stem get the extra AVX-512 flags; the
         # resulting .so won't load on AVX2-only hardware but is fine for the
         # specific experiment of testing AVX-512 candidates.
         extra = CFLAGS_AVX512 if "_avx512" in c_path.stem else []
-        # Quickbloom variant entry points need QB_NS pre-defined so the
-        # shared bloom_sbbf.c implementation produces the matching symbols.
-        prefix = QB_VARIANT_PREFIX.get(c_path.stem)
-        qb_defines = [f"-DQB_NS={prefix}"] if prefix else []
+        is_qb = c_path.stem in QB_CANDIDATES
         r = subprocess.run(
-            [CC, *CFLAGS, *extra, *qb_defines, str(c_path), "-o", str(so)],
+            [CC, *CFLAGS, *extra, str(c_path), "-o", str(so)],
             capture_output=True, text=True,
         )
         if r.returncode != 0:
@@ -200,8 +189,8 @@ def compile_candidate(c_path: Path, out_dir: Path) -> Candidate:
         source_path = c_path
 
     lib = ctypes.CDLL(str(so))
-    if prefix:
-        _alias_qb_to_bloom(lib, prefix)
+    if is_qb:
+        _alias_qb_to_bloom(lib)
     lib.bloom_new.argtypes = [ctypes.c_size_t]
     lib.bloom_new.restype = ctypes.c_void_p
     lib.bloom_free.argtypes = [ctypes.c_void_p]

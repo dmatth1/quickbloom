@@ -31,11 +31,9 @@ from pathlib import Path
 import harness
 
 
-# The 3 designs this repo ships at the top level.
+# The quickbloom library itself.
 MAIN_CANDIDATES = [
-    ("bloom_single_key.c", "single_key  -- SBBF, no prefetch (best in-cache)"),
-    ("bloom_unified.c",    "unified     -- SBBF + prefetch (good default)"),
-    ("bloom_batched.c",    "batched     -- 64-bit blocks + 8-way SIMD"),
+    ("quickbloom.c", "quickbloom  -- SBBF + wymum + AVX2 mask compute"),
 ]
 
 # External references / baselines, lifted from comparisons/ when --comparisons.

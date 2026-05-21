@@ -1,35 +1,22 @@
 // quickbloom.h -- public API for the quickbloom Bloom filter library.
 //
-// Three SBBF variants, all sharing the same single-key API shape. Pick
-// the variant whose performance profile matches your workload:
+// One implementation: a fast Split Block Bloom Filter (SBBF) with
+// wymum hashing and AVX2 SIMD mask compute. The fastest single-key
+// SBBF probe kernel on AVX2 x86_64 across all three cache regimes we
+// benchmark — see README's Performance section for the comparison.
 //
-//   qb_single_key_*  In-cache filters (< ~10 MB) or contains-heavy
-//                    workloads. Lowest in-cache latency. No prefetch.
-//
-//   qb_unified_*     Good default. Adds software prefetch lookahead of
-//                    8 keys; competitive across the cache hierarchy.
-//                    Slight in-cache regression vs single_key.
-//
-//   qb_batched_*     Out-of-cache filters (> ~10 MB) or columnar/bulk
-//                    workloads. 64-bit blocks, K=4, plus the 8-way
-//                    batched ABI (qb_batched_*_batch8).
-//
-// All three variants link into the same libquickbloom.so / .a and can
-// coexist in a single binary because their public symbols are
-// namespaced.
-//
-// Algorithm: Split Block Bloom Filter, Apache Parquet spec (Putze,
-// Sanders, Singler 2007). Same bit-position salt and 256-bit-block
-// (or, for batched, 64-bit-block) layout used by arrow-cpp / arrow-rs
-// / Velox / DuckDB.
+// Algorithm: SBBF, Apache Parquet spec (Putze, Sanders, Singler 2007).
+// 256-bit blocks, K=8 bits per probe, all bits in a single cache line.
+// Bit-identical bitset to other Parquet SBBF implementations
+// (arrow-cpp, arrow-rs, Velox, DuckDB, Impala) for the same 64-bit
+// hash input.
 //
 // Thread safety:
-//   - Concurrent reads (qb_*_contains, qb_*_contains_prehash,
-//     qb_*_contains_bulk, qb_*_contains_prehash_bulk,
-//     qb_batched_contains_batch8(_bulk)) are safe.
-//   - Concurrent writes (qb_*_insert*) are NOT safe; the bit-set is
-//     done with a non-atomic load-or-store. Callers that insert
-//     concurrently must provide their own synchronization.
+//   - Concurrent reads (qb_contains, qb_contains_prehash,
+//     qb_contains_bulk, qb_contains_prehash_bulk) are safe.
+//   - Concurrent writes (qb_insert*) are NOT safe; the block-level
+//     bit-set is done with a non-atomic load-or-store. Callers that
+//     insert concurrently must provide their own synchronization.
 //   - Reads concurrent with writes may see partial state but never a
 //     false negative once the write completes.
 //
@@ -52,49 +39,38 @@
 extern "C" {
 #endif
 
-// Single-key + prehash API shared by all three variants. NS is one of
-// qb_single_key, qb_unified, qb_batched.
-//
-// Conventions:
-//   - <NS>_new returns NULL on allocation failure.
-//   - <NS>_free accepts NULL.
-//   - <NS>_contains returns nonzero if the key may be present.
-//   - *_bulk variants return the number of hits in the queried batch.
-#define QB_DECLARE_CORE(NS) \
-    void*  NS##_new(size_t nbits); \
-    void   NS##_free(void* p); \
-    void   NS##_insert(void* p, const void* key, size_t len); \
-    int    NS##_contains(void* p, const void* key, size_t len); \
-    void   NS##_insert_bulk(void* p, const uint8_t* keys, size_t klen, size_t n); \
-    size_t NS##_contains_bulk(void* p, const uint8_t* keys, size_t klen, size_t n); \
-    void   NS##_insert_prehash(void* p, uint64_t hash); \
-    int    NS##_contains_prehash(void* p, uint64_t hash); \
-    void   NS##_insert_prehash_bulk(void* p, const uint64_t* hashes, size_t n); \
-    size_t NS##_contains_prehash_bulk(void* p, const uint64_t* hashes, size_t n);
+// Lifecycle.
+//   qb_new returns NULL on allocation failure.
+//   qb_free accepts NULL.
+void*  qb_new(size_t nbits);
+void   qb_free(void* p);
 
-QB_DECLARE_CORE(qb_single_key)
-QB_DECLARE_CORE(qb_unified)
-QB_DECLARE_CORE(qb_batched)
+// Single-key API.
+//   qb_contains returns nonzero if the key may be present.
+void   qb_insert(void* p, const void* key, size_t len);
+int    qb_contains(void* p, const void* key, size_t len);
 
-#undef QB_DECLARE_CORE
+// Bulk API. Returns the number of hits in the queried batch.
+void   qb_insert_bulk(void* p, const uint8_t* keys, size_t klen, size_t n);
+size_t qb_contains_bulk(void* p, const uint8_t* keys, size_t klen, size_t n);
 
-// 8-way batched ABI, batched variant only. Pass exactly 8 pre-computed
-// 64-bit hashes; qb_batched_contains_batch8 returns a bitmap of the 8
-// results in the low byte (bit i == 1 means hashes[i] may be present).
-void    qb_batched_insert_batch8(void* p, const uint64_t hashes[8]);
-uint8_t qb_batched_contains_batch8(void* p, const uint64_t hashes[8]);
-void    qb_batched_insert_batch8_bulk(void* p, const uint64_t* hashes, size_t n);
-size_t  qb_batched_contains_batch8_bulk(void* p, const uint64_t* hashes, size_t n);
+// Prehash API. Callers that already have a 64-bit hash for the key
+// can skip the built-in wymum step.
+void   qb_insert_prehash(void* p, uint64_t hash);
+int    qb_contains_prehash(void* p, uint64_t hash);
+void   qb_insert_prehash_bulk(void* p, const uint64_t* hashes, size_t n);
+size_t qb_contains_prehash_bulk(void* p, const uint64_t* hashes, size_t n);
 
-// qb_estimate_bits returns a recommended filter size in bits to hold
+// Sizing helper. Returns a recommended filter size in bits to hold
 // approximately n items at the requested false-positive rate fp. Pass
-// the result to any <NS>_new; the variant rounds it up to a power of
-// two internally.
+// the result to qb_new; the filter rounds it up to a power of two
+// internally.
 //
 // The formula is the classical Bloom filter bit-budget; SBBF's actual
-// FP rate at this sizing is typically within ~2x of fp on small filters
-// and converges to fp as the filter grows. Callers who need a specific
-// FP target on a small filter should over-size (e.g. multiply by 1.5).
+// FP rate at this sizing is typically within ~2x of fp on small
+// filters and converges to fp as the filter grows. Callers who need
+// a specific FP target on a small filter should over-size (e.g.
+// multiply by 1.5).
 size_t qb_estimate_bits(size_t n, double fp);
 
 #ifdef __cplusplus

@@ -6,6 +6,7 @@
 #   make test       -- build and run the native C test binary
 #   make example    -- build the hello_quickbloom example
 #   make bench      -- run the Python benchmark sweep
+#   make bench-hash -- per-hash kernel cost (wymum / XXH64 / SipHash-1-3)
 #   make install    -- install header + libs + pkg-config to $(PREFIX) (default /usr/local)
 #   make clean      -- remove build artefacts
 #
@@ -25,13 +26,8 @@ SOVERSION  := 0
 CFLAGS_BASE := -O3 -mavx2 -mbmi2 -mfma -maes -fPIC -Wall -Wextra -std=c11
 CFLAGS      := $(CFLAGS_BASE) $(CFLAGS_EXTRA)
 
-# Each variant compiles bloom_sbbf.c or bloom_batched.c with a different
-# QB_NS and PREFETCH_LOOKAHEAD. qb_util.o has variant-agnostic helpers
-# (qb_estimate_bits). All four objects link into the same library.
 OBJS := \
-	$(BUILD)/single_key.o \
-	$(BUILD)/unified.o    \
-	$(BUILD)/batched.o    \
+	$(BUILD)/quickbloom.o \
 	$(BUILD)/qb_util.o
 
 # Linux-style versioned shared library:
@@ -53,14 +49,8 @@ lib: $(LIB_SO) $(LIB_A) $(LIB_PC)
 $(BUILD):
 	mkdir -p $(BUILD)
 
-$(BUILD)/single_key.o: bloom_sbbf.c bloom_single_key.c | $(BUILD)
-	$(CC) $(CFLAGS) -DQB_NS=qb_single_key -DPREFETCH_LOOKAHEAD=0 -c bloom_sbbf.c -o $@
-
-$(BUILD)/unified.o: bloom_sbbf.c bloom_unified.c | $(BUILD)
-	$(CC) $(CFLAGS) -DQB_NS=qb_unified -DPREFETCH_LOOKAHEAD=8 -c bloom_sbbf.c -o $@
-
-$(BUILD)/batched.o: bloom_batched.c | $(BUILD)
-	$(CC) $(CFLAGS) -c bloom_batched.c -o $@
+$(BUILD)/quickbloom.o: quickbloom.c quickbloom.h | $(BUILD)
+	$(CC) $(CFLAGS) -I. -c quickbloom.c -o $@
 
 $(BUILD)/qb_util.o: qb_util.c quickbloom.h | $(BUILD)
 	$(CC) $(CFLAGS) -I. -c qb_util.c -o $@
@@ -95,14 +85,15 @@ $(BUILD)/hello_quickbloom: examples/hello_quickbloom.c $(LIB_A) quickbloom.h | $
 example: $(BUILD)/hello_quickbloom
 	$<
 
-# Python benchmark sweep. Compiles each variant's .c separately the way
-# it always has — independent of the library build above.
+# Python benchmark sweep. Compiles each candidate's .c separately the
+# way it always has — independent of the library build above.
 bench:
 	python3 bench_all.py
 
-# Per-hash cost bench. Measures wymum16 / XXH64 / SipHash-1-3 over 16-byte
-# keys with the same compile flags as the rest of the project, so the
-# numbers can be compared directly against the prehash bloom benches.
+# Per-hash cost bench. Measures wymum16 / XXH64 / SipHash-1-3 over
+# 16-byte keys with the same compile flags as the rest of the
+# project, so the numbers can be compared directly against the
+# prehash bloom benches.
 $(BUILD)/bench_hash: tools/bench_hash.c | $(BUILD)
 	$(CC) $(CFLAGS) -o $@ tools/bench_hash.c
 

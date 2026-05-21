@@ -16,9 +16,7 @@ import harness
 
 
 CANDIDATES = [
-    "bloom_single_key.c",
-    "bloom_unified.c",
-    "bloom_batched.c",
+    "quickbloom.c",
     "comparisons/bloom_impala.c",
     "comparisons/bloom_krassovsky.c",
     "comparisons/bloom_classic.c",
