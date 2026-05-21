@@ -55,8 +55,9 @@ Split Block Bloom Filter
 - AVX2 SIMD mask compute: `vpmullo` + `vpsrli` + `vpsllv` + `vptest`.
 - 4-way unrolled bulk paths. Insert uses sequential load-or-store per
   key so store-to-load forwarding handles aliased blocks.
-- Hash is `wymum` (one 128-bit multiply) on the 16-byte fast path,
-  `fasthash64` for variable-length keys.
+- Hash on the 16-byte fast path is a single 128-bit multiply with
+  xor-fold of the halves (wyhash-style, seeded so structured zero
+  inputs don't collapse). Variable-length keys use `fasthash64`.
 
 ## ABI
 
@@ -98,24 +99,31 @@ size_t qb_estimate_bits(size_t n, double fp);
 
 Built with `-O3 -mavx2 -mbmi2 -mfma -maes`. Runs on any x86_64 with
 AVX2 + BMI2: Intel Haswell (2013)+ or AMD Excavator (2015)+ / Zen
-1–5.
+1–5. AArch64 / Apple Silicon support is not planned — the bitset
+layout is portable but the SIMD mask compute is x86-specific and
+would need a NEON re-derivation.
 
 ## Performance
 
 > Numbers are illustrative and **host-dependent**. Run `make bench`
 > on your hardware. Captured on Intel Xeon @ 2.8 GHz (Cascade
-> Lake-class, 33 MB L3), clang -O3, contains-miss, min ns/op.
+> Lake-class, 1 MB L2 per core, 33 MB L3), clang -O3, contains-miss,
+> min ns/op. Sizes span the cache hierarchy: S fits in L2, M and L
+> spill to L3.
 
 ### quickbloom
 
 | Size                 | hash+bloom | prehash |
 |----------------------|-----------:|--------:|
-| S (128 KB, in L2)    |       1.95 |    1.44 |
-| M (2 MB, in L3)      |       9.28 |    5.01 |
-| L (32 MB, around L3) |      16.09 |   12.04 |
+| S (128 KB)           |       1.95 |    1.44 |
+| M (2 MB)             |       9.28 |    5.01 |
+| L (32 MB)            |      16.09 |   12.04 |
 
 Hash+bloom is the full `qb_contains(bytes, len)` path. Prehash is
 the kernel alone, for callers using `qb_contains_prehash(uint64)`.
+The S→M jump reflects this host's L2/L3 boundary at 1 MB per core;
+on hosts with larger L2 (Sapphire Rapids and newer have 2–8 MB per
+core) M stays L2-resident and the jump shrinks.
 
 ### Comparison
 

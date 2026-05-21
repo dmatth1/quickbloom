@@ -32,6 +32,10 @@ static inline uint64_t wymum16(const void* data) {
     uint64_t a, b;
     memcpy(&a, data, 8);
     memcpy(&b, (const uint8_t*)data + 8, 8);
+    // Same seeded XOR as quickbloom.c hash16 — prevents zero-input
+    // collapse on structured keys with a zero half.
+    a ^= 0x736f6d6570736575ULL;
+    b ^= 0x646f72616e646f6dULL;
     __uint128_t r = (__uint128_t)a * b;
     return (uint64_t)r ^ (uint64_t)(r >> 64);
 }

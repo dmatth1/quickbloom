@@ -40,7 +40,7 @@ LIB_SO      := $(BUILD)/libquickbloom.so
 LIB_A       := $(BUILD)/libquickbloom.a
 LIB_PC      := $(BUILD)/quickbloom.pc
 
-.PHONY: all lib test example bench bench-hash install clean
+.PHONY: all lib test example bench bench-hash fuzz install clean
 
 all: lib
 
@@ -99,6 +99,20 @@ $(BUILD)/bench_hash: tools/bench_hash.c | $(BUILD)
 
 bench-hash: $(BUILD)/bench_hash
 	$<
+
+# libFuzzer harnesses. Require clang. Build the library with the
+# fuzzer sanitizer so the bloom code is instrumented too, then link
+# each harness into a standalone fuzzer binary.
+FUZZ_CFLAGS := -O1 -g -fsanitize=fuzzer,address,undefined -fno-sanitize-recover=all \
+               -mavx2 -mbmi2 -mfma -maes -Wall -Wextra -std=c11
+
+$(BUILD)/fuzz_insert: tools/fuzz_insert.c quickbloom.c qb_util.c quickbloom.h | $(BUILD)
+	$(CC) $(FUZZ_CFLAGS) -I. -o $@ tools/fuzz_insert.c quickbloom.c qb_util.c -lm
+
+$(BUILD)/fuzz_fasthash_var: tools/fuzz_fasthash_var.c quickbloom.c qb_util.c quickbloom.h | $(BUILD)
+	$(CC) $(FUZZ_CFLAGS) -I. -o $@ tools/fuzz_fasthash_var.c quickbloom.c qb_util.c -lm
+
+fuzz: $(BUILD)/fuzz_insert $(BUILD)/fuzz_fasthash_var
 
 install: lib
 	install -d $(DESTDIR)$(PREFIX)/include

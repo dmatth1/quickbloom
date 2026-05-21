@@ -73,6 +73,25 @@ size_t qb_contains_prehash_bulk(void* p, const uint64_t* hashes, size_t n);
 // multiply by 1.5).
 size_t qb_estimate_bits(size_t n, double fp);
 
+// Serialization. The wire format is the raw bitset: nblocks 32-byte
+// blocks in order, each block 8 little-endian uint32 lanes. This is
+// bit-identical to what arrow-cpp, arrow-rs, Velox, DuckDB, and
+// Impala write for the same hash inputs — the Parquet spec mandates
+// the layout. Note: no quickbloom-specific header is added; callers
+// embedding into Parquet should write their own BloomFilterHeader
+// thrift block separately.
+//
+//   qb_serialized_size(p) returns nblocks * 32 bytes.
+//   qb_serialize(p, dst) writes that many bytes to dst (caller-owned;
+//     must be at least qb_serialized_size(p) bytes).
+//   qb_deserialize(bytes, nbytes) builds a filter from the raw bitset
+//     bytes. nbytes must be a multiple of 32 and nbytes/32 must be a
+//     power of two; otherwise returns NULL. The filter takes its own
+//     copy — the input buffer can be freed after the call.
+size_t qb_serialized_size(void* p);
+void   qb_serialize(void* p, uint8_t* dst);
+void*  qb_deserialize(const uint8_t* bytes, size_t nbytes);
+
 #ifdef __cplusplus
 } // extern "C"
 #endif

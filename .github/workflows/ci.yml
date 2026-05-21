@@ -42,6 +42,30 @@ jobs:
           test -f stage/usr/lib/libquickbloom.a
           test -f stage/usr/lib/libquickbloom.so
 
+  sanitizers:
+    runs-on: ubuntu-latest
+    name: ASan + UBSan (gcc)
+    steps:
+      - uses: actions/checkout@v4
+      - name: build + run tests under ASan/UBSan
+        run: |
+          make clean
+          CFLAGS_EXTRA='-fsanitize=address,undefined -fno-sanitize-recover=all -g' \
+            make test CC=gcc
+
+  fuzz-smoke:
+    runs-on: ubuntu-latest
+    name: libFuzzer smoke (short run)
+    steps:
+      - uses: actions/checkout@v4
+      - name: install clang
+        run: sudo apt-get update && sudo apt-get install -y clang
+      - name: build + run fuzzers for 30s each
+        run: |
+          make fuzz CC=clang
+          ./build/fuzz_insert       -max_total_time=30 -print_final_stats=1
+          ./build/fuzz_fasthash_var -max_total_time=30 -print_final_stats=1
+
   python-bench-smoke:
     runs-on: ubuntu-latest
     name: python bench smoke (smallest size only)

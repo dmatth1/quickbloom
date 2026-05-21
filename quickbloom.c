@@ -39,6 +39,13 @@ static inline uint64_t hash16(const void* data) {
     uint64_t a, b;
     memcpy(&a, data, 8);
     memcpy(&b, (const uint8_t*)data + 8, 8);
+    // XOR with mixing constants so structured inputs (notably, a key
+    // with a zero half — e.g. a 64-bit ID padded into a 16-byte
+    // buffer) don't degenerate to multiplication by zero. Constants
+    // are SipHash's initial state words; any pair of high-entropy
+    // primes works.
+    a ^= 0x736f6d6570736575ULL;
+    b ^= 0x646f72616e646f6dULL;
     __uint128_t r = (__uint128_t)a * b;
     return (uint64_t)r ^ (uint64_t)(r >> 64);
 }
@@ -242,6 +249,45 @@ void qb_insert_prehash_bulk(void* p, const uint64_t* hashes, size_t n) {
         APPLY(p0, m0); APPLY(p1, m1); APPLY(p2, m2); APPLY(p3, m3);
     }
     for (; i < n; i++) qb_insert_prehash(p, hashes[i]);
+}
+
+// Serialization. The on-disk layout is identical to the in-memory
+// one (nblocks 32-byte blocks of 8 little-endian uint32 lanes), which
+// is also the Parquet spec layout. memcpy on both directions; on
+// non-x86 the load/store macros would need byteswapping, but we're
+// x86-only by build.
+
+size_t qb_serialized_size(void* p) {
+    if (!p) return 0;
+    bloom_t* b = (bloom_t*)p;
+    return (b->nblocks_mask + 1) * SBBF_BLOCK_BYTES;
+}
+
+void qb_serialize(void* p, uint8_t* dst) {
+    if (!p || !dst) return;
+    bloom_t* b = (bloom_t*)p;
+    size_t nbytes = (b->nblocks_mask + 1) * SBBF_BLOCK_BYTES;
+    memcpy(dst, b->bits, nbytes);
+}
+
+void* qb_deserialize(const uint8_t* bytes, size_t nbytes) {
+    if (!bytes) return NULL;
+    if (nbytes == 0 || nbytes % SBBF_BLOCK_BYTES != 0) return NULL;
+    size_t nblocks = nbytes / SBBF_BLOCK_BYTES;
+    // nblocks must be a power of two so the bit-mask index works.
+    if ((nblocks & (nblocks - 1)) != 0) return NULL;
+
+    bloom_t* b = (bloom_t*)malloc(sizeof(bloom_t));
+    if (!b) return NULL;
+    void* mem = NULL;
+    if (posix_memalign(&mem, 32, nbytes) != 0) {
+        free(b);
+        return NULL;
+    }
+    memcpy(mem, bytes, nbytes);
+    b->nblocks_mask = nblocks - 1;
+    b->bits = (uint32_t*)mem;
+    return b;
 }
 
 size_t qb_contains_prehash_bulk(void* p, const uint64_t* hashes, size_t n) {
