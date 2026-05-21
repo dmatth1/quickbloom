@@ -48,10 +48,6 @@ CC=clang python3 bench_all.py --target-fp 0.001 # equal-FP comparison
 python3 test_bloom.py                           # Python correctness tests
 ```
 
-`bench_all.py` reports min/median/p90 ns/op at each size for both the
-hash+bloom path (user-visible) and the prehash path (algorithm only,
-comparable to published cyc/op).
-
 ## Algorithm
 
 Split Block Bloom Filter
