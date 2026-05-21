@@ -5,6 +5,15 @@ Investigation porting quickbloom's SBBF (`bloom_single_key.c` /
 arrow-rs's `parquet::bloom_filter::Sbbf` — the production Rust
 Parquet bloom filter, which is fully scalar.
 
+## ➡️ Going to file the PR? Read `PR_HANDOFF.md`
+
+`PR_HANDOFF.md` is the single self-contained doc for the session that
+will fork `apache/arrow-rs`, do the port, and open the PR. It has the
+step-by-step instructions, code snippets ready to paste, the PR body,
+anticipated review feedback, and honest time estimates. Start there.
+
+The rest of this document is the original investigation overview.
+
 ## What this is
 
 arrow-rs's `Sbbf::check` and `Sbbf::insert` (verified
