@@ -1,16 +1,12 @@
 # quickbloom
 
-A fast Split Block Bloom Filter for x86_64 with AVX2. One
-implementation: `wymum` hash + SIMD mask compute, single 256-bit
-cache-line block per probe. The fastest single-key SBBF probe kernel
-on AVX2 x86_64 across the cache regimes we bench. See
-[Performance](#performance) for the head-to-head.
+Fast Split Block Bloom Filter for x86_64. `wymum` hash + AVX2 mask
+compute, one cache line per probe. The fastest single-key SBBF
+kernel we've measured — see [Performance](#performance).
 
-Reference implementations of other Bloom designs (Apache Parquet/Impala
-SBBF, Save Buffer PatternedSimd, textbook K-hash Bloom, binary fuse
-filter, arrow-rs SBBF, fastbloom) live in
-[`comparisons/`](comparisons/README.md) and are built by the same
-harness when you pass `--comparisons`.
+Reference Bloom implementations (impala, krassovsky, classic,
+xorfuse, arrow-rs, fastbloom) live in
+[`comparisons/`](comparisons/README.md).
 
 ## Quick start
 
