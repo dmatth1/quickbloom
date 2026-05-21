@@ -174,19 +174,14 @@ XXH64), and its kernel would land near `impala`'s.
 
 ### Per-key hash cost
 
-Kernel cost on 16-byte keys, same compile flags as the bloom bench.
-Lets you reconstruct any candidate's hash+bloom from its prehash
-number. Reproduce with `make bench-hash`:
-
-| Hash         | Used by              | ns/op (min) |
-|--------------|----------------------|------------:|
-| `wymum16`    | `quickbloom`         |    **0.90** |
-| `XXH64`      | `impala`, `arrow_rs` |        2.80 |
-| `SipHash-1-3`| `fastbloom`          |        3.40 |
-
-Real-world `fastbloom` end-to-end hash overhead is closer to ~15 ns
-on this host because the Rust `Hasher` trait adds per-call dispatch
-and the seed is loaded from filter state on every call.
+Kernel cost on 16-byte keys, same compile flags as the bloom bench
+(reproduce with `make bench-hash`): `wymum16` 0.90 ns/op
+(quickbloom), `XXH64` 2.80 ns/op (impala, arrow_rs), `SipHash-1-3`
+3.40 ns/op (fastbloom). Lets you reconstruct any candidate's
+hash+bloom from its prehash number. Real-world `fastbloom`
+end-to-end hash overhead is closer to ~15 ns because the Rust
+`Hasher` trait adds per-call dispatch and the seed is loaded from
+filter state on every call.
 
 ### Where the prehash gap comes from
 
