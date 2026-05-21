@@ -100,13 +100,9 @@ size_t qb_estimate_bits(size_t n, double fp);
 ### Thread safety
 
 - Concurrent **reads** (`qb_contains*`) are safe.
-- Concurrent **writes** (`qb_insert*`) are **not** safe; the bit-set is
-  done with a non-atomic load-or-store. Callers that insert concurrently
-  must provide their own synchronisation. (This matches the convention
-  of every production SBBF we checked — arrow-rs, impala, parquet-rs.
-  We measured the cost of atomicising and it's ~8.6× slower per insert,
-  not worth the cost for the typical bloom lifecycle of "fill once,
-  query many.")
+- Concurrent **writes** (`qb_insert*`) are **not** safe (non-atomic
+  bit-set). Callers must synchronize. (Same convention as arrow-rs,
+  impala, parquet-rs.)
 - Reads concurrent with writes may see partial state but never a false
   negative once the write completes.
 
